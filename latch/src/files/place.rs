@@ -225,7 +225,13 @@ mod tests {
             let failure = resolve(remote).unwrap_err();
             (failure.exit, failure.code)
         };
-        for hidden in ["~/.latch/key", "~/linked/../.latch/key", "/etc/hosts"] {
+        fs::create_dir_all(home.join(".swarm/owner")).unwrap();
+        for hidden in [
+            "~/.latch/key",
+            "~/linked/../.latch/key",
+            "~/.swarm/owner/credential.json",
+            "/etc/hosts",
+        ] {
             assert_eq!(
                 refused(hidden),
                 (Exit::Denied, "bad_path".into()),

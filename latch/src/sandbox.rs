@@ -74,11 +74,18 @@ pub const VISIBLE_IN_LIBRARY: &[&str] = &[
 ];
 
 /// Latch's private state (`~/.latch`, and the folder latch uses without
-/// `--state-dir` wherever it is) and, on macOS, Library, less its
-/// `VISIBLE_IN_LIBRARY` folders. The host denies its own state separately.
+/// `--state-dir` wherever it is), swarm's folder (`~/.swarm`, and
+/// `$SWARM_HOME`), whose sign-ins, the owner's own among them, hold
+/// credentials, and, on macOS, Library, less its `VISIBLE_IN_LIBRARY`
+/// folders. The host denies its own state separately.
 pub fn never_readable(home: &Path) -> Vec<PathBuf> {
+    let swarm = std::env::var_os("SWARM_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from);
     std::iter::once(home.join(".latch"))
         .chain(crate::cli::default_state_dir())
+        .chain([home.join(".swarm")])
+        .chain(swarm)
         .chain(cfg!(target_os = "macos").then(|| home.join("Library")))
         .collect()
 }

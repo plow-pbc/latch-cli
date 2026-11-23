@@ -107,6 +107,13 @@ fn login_path() -> Option<OsString> {
     LOGIN_PATH.get().cloned()
 }
 
+/// The `PATH` a program the owner runs by name is found on: their login
+/// `PATH`, then the host's own, as for exec. A host the Mac app started
+/// has only the app's own.
+pub fn owner_path() -> OsString {
+    exec_path(login_path(), std::env::var_os("PATH"))
+}
+
 /// The owner's login shell, from the user database: their environment, a
 /// managed host's included, may name another or none.
 pub fn login_shell() -> Option<String> {
@@ -407,7 +414,7 @@ impl WorkerSetup {
         }
         command.arg("--").args(&args.argv);
         command
-            .env("PATH", exec_path(login_path(), std::env::var_os("PATH")))
+            .env("PATH", owner_path())
             .env("TMPDIR", tmpdir)
             .process_group(0)
             .stdin(Stdio::piped())

@@ -86,16 +86,6 @@ pub trait ThreadSource: Send + Sync {
     fn read<'a>(&'a self, intent: &'a IntentRef, agent: &'a str) -> Reading<'a>;
 }
 
-/// The host's source until it can read Swarm: every citation is refused,
-/// as unread, so nothing an agent cites is ever taken on trust.
-pub struct NoReader;
-
-impl ThreadSource for NoReader {
-    fn read<'a>(&'a self, _intent: &'a IntentRef, _agent: &'a str) -> Reading<'a> {
-        Box::pin(async { Err("this host has no Swarm reader set up yet".into()) })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::IntentRef;

@@ -40,7 +40,7 @@ GROUPS = [
     ("Programs and files", ["exec", "file"]),
     ("Browser", ["browser"]),
     ("Vault", ["vault"]),
-    ("Rules", ["rules"]),
+    ("Rules", ["rules", "swarm"]),
     ("Connectors", ["plugins", "google", "messages", "contacts"]),
     ("Audit", ["audit"]),
 ]

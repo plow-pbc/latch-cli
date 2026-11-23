@@ -249,6 +249,7 @@ without a model call.
 | Task | On the host | From another of your machines | Works while the host is stopped |
 |---|---|---|---|
 | Device rule | `latch rules show\|set\|edit\|clear` | add `--host NAME` | Yes |
+| Swarm sign-in | `latch swarm signin --company SLUG`: the host reads cited messages as you | on the host only | Yes |
 | Agent map | `latch agents map AGENT SWARM_ID`; `latch agents --host NAME` shows each agent's `standing` (`swarm_id`, `exec_blocked`) | add `--host NAME` | Yes |
 | Vault | `latch vault list\|show\|add\|edit\|remove\|import\|link\|link-state` | add `--host NAME` | Yes, except `vault link` and `link-state` |
 | Connectors | `latch plugins enable\|disable google` (on a Mac, also `messages` and `contacts`) | `latch status` shows the ones each host has on; `latch status --host NAME` lists them all | Yes |

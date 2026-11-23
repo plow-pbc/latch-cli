@@ -530,7 +530,7 @@ async fn run_host(
     let gatekeeper = Gatekeeper::new(
         Gatekeeper::provider_for_host(&state.path)
             .map_err(|why| Failure::new(code::not_logged_in, why))?,
-        Box::new(crate::gate::thread::NoReader),
+        Box::new(crate::gate::swarm::SwarmReader::new(&state.path)),
         &state.path,
     )
     .keeping_requests(&state.path)

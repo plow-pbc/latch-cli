@@ -203,9 +203,9 @@ pub enum Command {
     Browser(BrowserArgs),
     /// The host's vault: add, list, edit, remove and import items (owner only)
     Vault(VaultArgs),
-    /// Your standing rules for agents on a host (owner only)
+    /// What agents are always denied on a host: its device rule (owner only)
     ///
-    /// The host's gatekeeper reads them at every judgment
+    /// The host's gatekeeper reads it at every judgment
     Rules(RulesArgs),
     /// Turn this host's connectors on or off
     ///
@@ -218,6 +218,12 @@ pub enum Command {
     /// and a stopped one when it starts. `status --local` reports what the
     /// host makes of them
     Settings(SettingsArgs),
+    /// Sign this host in to Swarm as you (owner only)
+    ///
+    /// The gatekeeper then reads, as one of your own devices, the message
+    /// of yours an agent cites with --intent
+    #[command(subcommand)]
+    Swarm(SwarmCommand),
     /// Read a host's sealed audit log
     ///
     /// This machine's host's, or another host's with --host: its newest
@@ -911,6 +917,21 @@ pub enum PluginsCommand {
     /// On this machine's host, a running one refuses new calls at once, and
     /// this returns once its running ones have finished (owner only)
     Disable { name: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SwarmCommand {
+    /// Sign this machine's host in to Swarm with your Plow login
+    ///
+    /// Runs `swarm signin --company SLUG` with your Plow login in its
+    /// environment, never on its command line; the Swarm CLI must be
+    /// installed ($LATCH_SWARM names it). You must have signed in to Swarm
+    /// in a browser once, so it has your key backup to read from
+    Signin {
+        /// Your company's Swarm slug, such as hq
+        #[arg(long)]
+        company: String,
+    },
 }
 
 #[derive(Args, Debug)]
