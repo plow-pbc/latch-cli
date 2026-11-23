@@ -1619,6 +1619,7 @@ async fn one_approved_card_fill_covers_its_checkouts_address(engine: &str) {
     host.agent("goto", &id, frames, None).await.0.unwrap();
     // The provider's frames load after the page: observe until latch
     // suggests the card across them.
+    let mut last = Value::Null;
     let (hosted, suggested) = 'loaded: {
         for _ in 0..40 {
             let hosted = host.agent("observe", &id, json!({}), None).await.0.unwrap();
@@ -1629,9 +1630,19 @@ async fn one_approved_card_fill_covers_its_checkouts_address(engine: &str) {
             if let Some(found) = found.clone().find(|s| s["item"] == card.as_str()) {
                 break 'loaded (hosted.clone(), found.clone());
             }
+            last = hosted;
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        panic!("no card suggestion across the provider's frames");
+        let frames: Vec<&Value> = last["elements"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|e| e["role"] == "textbox")
+            .collect();
+        panic!(
+            "no card suggestion across the provider's frames: fill {:#} textboxes {frames:#?}",
+            last["fill"]
+        );
     };
     let number = json!([["number", suggested["fields"]["number"]]]);
     let (framed, _) = fill(&card, &hosted, number.clone()).await;
