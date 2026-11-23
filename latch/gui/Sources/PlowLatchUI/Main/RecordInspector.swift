@@ -262,7 +262,7 @@ struct Why: View {
 
     var body: some View {
         Section("Why") {
-            if let intent = gate.intentRef {
+            if let intent = gate.cited {
                 LabeledContent("Cited message") { Text(intent).font(.caption.monospaced()).textSelection(.enabled) }
             }
             if let later = gate.laterOwnerMessages, later > 0 {

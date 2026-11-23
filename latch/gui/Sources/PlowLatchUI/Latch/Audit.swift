@@ -91,8 +91,9 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
         var verdict: String?
         /// `free` (a read, judged by no one) or `intent`.
         var `class`: String?
-        /// The owner's message an agent cited, `swarm:<room>/<event>`.
-        var intent: String?
+        /// The owner's message an agent cited, `<room>/<event>`, kept
+        /// even when the citation was refused.
+        var cited: String?
         /// The device rule's revision it was judged by, when there was one.
         var deviceRule: String?
         /// The owner's messages after the cited one, read with it.
@@ -105,8 +106,6 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
         /// The call as the host kept it (`latch audit judge`).
         var keptRequest: String?
 
-        /// The cited message, as an agent passes it: `<room>/<event>`.
-        var intentRef: String? { intent.map { $0.hasPrefix("swarm:") ? String($0.dropFirst(6)) : $0 } }
 
         /// A verdict in words: latch's own code's words for one the app
         /// doesn't know.

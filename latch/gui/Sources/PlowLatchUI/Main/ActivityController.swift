@@ -238,7 +238,7 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
         case .time: record.time.formatted(.dateTime.hour().minute().second())
         case .status: record.status.title
         case .request: record.command ?? "—"
-        case .intent: record.gate?.intentRef ?? ""
+        case .intent: record.gate?.cited ?? ""
         case .caller:
             record.callerLabel(hostKey: app.key(of: host), hostName: host.name, isThisMac: host.isThisMac).who
         }
@@ -283,7 +283,7 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
             cell.toolTip = record.command ?? "A connection"
         case .intent:
             cell.textField?.stringValue = text(of: record, .intent, on: host)
-            cell.toolTip = record.gate?.intentRef.map { "Your message it cited: \($0)" }
+            cell.toolTip = record.gate?.cited.map { "Your message it cited: \($0)" }
         case .caller:
             let caller = record.callerLabel(hostKey: app.key(of: host), hostName: host.name, isThisMac: host.isThisMac)
             // One line, cut short at its end like the others.

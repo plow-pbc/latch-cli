@@ -13,8 +13,8 @@ struct ActivityTests {
         let page = try AuditPage.parse(Data(Fixtures.studioAudit.utf8))
         #expect(page.records.count == 27)
         #expect(!page.hasOlder)
-        let cited = try #require(page.records.first { $0.gate?.intent != nil })
-        #expect(cited.gate?.intentRef == "!kD3vqPmXc:plow.co/$Yx9pQ2rLmT0aWbN4")
+        let cited = try #require(page.records.first { $0.gate?.cited != nil })
+        #expect(cited.gate?.cited == "!kD3vqPmXc:plow.co/$Yx9pQ2rLmT0aWbN4")
         #expect(cited.gate?.p?["covered"] != nil)
     }
 
@@ -301,9 +301,9 @@ struct RecordShapeTests {
     // `browser/judged.rs` keeps a browser judgment in the args, as `gate`,
     // beside what was judged.
     @Test func aBrowserJudgmentIsRead() throws {
-        let refused = try record(#"{"agent":"a1","caller":"k","caller_name":"scout","decision":"deny","details":{"args":{"command":"open","origin":"https://shop.example","judged":{"kind":"open"},"gate":{"verdict":"denied_by_rule","intent":"swarm:!dm:plow.co/$e1","p":{"denied":0.9,"covered":0.8}}},"gate":null,"started":null},"id":"b1","op":"browser","outcome":"gatekeeper_denied","time":"2026-10-23T05:27:23Z"}"#)
+        let refused = try record(#"{"agent":"a1","caller":"k","caller_name":"scout","decision":"deny","details":{"args":{"command":"open","origin":"https://shop.example","judged":{"kind":"open"},"gate":{"verdict":"denied_by_rule","cited":"!dm:plow.co/$e1","p":{"denied":0.9,"covered":0.8}}},"gate":null,"started":null},"id":"b1","op":"browser","outcome":"gatekeeper_denied","time":"2026-10-23T05:27:23Z"}"#)
         #expect(refused.status == .gatekeeper("denied_by_rule"))
-        #expect(refused.gate?.intentRef == "!dm:plow.co/$e1")
+        #expect(refused.gate?.cited == "!dm:plow.co/$e1")
         #expect(!RecordInspector.otherFields(of: refused).map(\.key).contains("gate"))
     }
 

@@ -53,9 +53,7 @@ struct DeviceRuleBox: View {
             if answering || draft != nil {
                 HStack {
                     Spacer()
-                    if !answering {
-                        Button("Revert") { Task { await app.revertRule(name) } }.disabled(saving)
-                    }
+                    Button("Revert") { Task { await app.revertRule(name) } }.disabled(saving)
                     Button(saving ? "Saving…" : "Save") { Task { await app.saveRuleDraft(name, answer: answering) } }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(answering ? .defaultAction : nil)
