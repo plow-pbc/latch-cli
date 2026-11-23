@@ -2072,9 +2072,9 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
     assert_eq!(rule(), None);
 
     // Every command is in the host's audit log, by this machine's key, with
-    // revisions and never the text.
+    // revisions; each saved text is kept beside the revision it made, and
+    // no refused one's is.
     let records = audit_records(&state);
-    let log = Value::from(records.clone()).to_string();
     let commands: Vec<&str> = records
         .iter()
         .map(|r| r["args"]["command"].as_str().unwrap())
@@ -2099,7 +2099,26 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
             .all(|r| r["op"] == "rules" && r["caller"] == key.as_str())
     );
     assert_eq!(records[2]["args"]["before"], records[0]["args"]["after"]);
-    assert!(!log.contains("email") && !log.contains("buy"), "{log}");
+    assert_eq!(
+        saved_texts(&records),
+        [
+            (&records[0]["args"]["after"], &json!("Never send email.")),
+            (
+                &records[2]["args"]["after"],
+                &json!("Never send email.\nNever buy anything.")
+            ),
+            (&records[7]["args"]["after"], &json!("Anything goes.")),
+        ]
+    );
+}
+
+/// Each rules record's saved text, with the revision it made.
+fn saved_texts(records: &[Value]) -> Vec<(&Value, &Value)> {
+    records
+        .iter()
+        .filter(|r| !r["args"]["text"].is_null())
+        .map(|r| (&r["args"]["after"], &r["args"]["text"]))
+        .collect()
 }
 
 #[test]
@@ -5288,7 +5307,8 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
         !connects.is_empty() && connects.iter().all(|name| name == "owner-mac"),
         "{connects:?}"
     );
-    // The host audited every command by revision, never by text, and
+    // The host audited every command by revision, with the text of each
+    // save the owner made and of no refused one, and
     // named each caller: a machine by its name, the agent by its name in
     // Plow once the host has looked it up (never waiting to, so not on its
     // first call).
@@ -5315,7 +5335,6 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
             &json!("Research bot")
         ]
     );
-    let log = Value::from(records.clone()).to_string();
     let decisions: Vec<(&str, &str)> = records
         .iter()
         .map(|r| {
@@ -5342,7 +5361,13 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
             ("clear", "allow"),
         ]
     );
-    assert!(!log.contains("email"), "{log}");
+    assert_eq!(
+        saved_texts(&records),
+        [
+            (&records[0]["args"]["after"], &json!("Never send email.")),
+            (&records[2]["args"]["after"], &json!(edited_text)),
+        ]
+    );
 }
 
 /// `~/.latch` holding what an older install left (other apps' files beside
