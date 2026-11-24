@@ -69,8 +69,11 @@ use thread::{IntentRef, Thread, ThreadSource};
 
 /// The decision model the gatekeeper asks, on Plow's decision route.
 pub const MODEL: &str = "typesafe/jev-1.14";
-/// A check finds its problem from this P(yes) up: only a clear yes refuses.
+/// An agent's check finds its problem from this P(yes) up: only a clear yes
+/// refuses.
 pub const CLEAR_P: f64 = 0.7;
+/// The device rule denies the owner's own call from this P(yes) up.
+pub const OWNER_DENIED_P: f64 = 0.5;
 
 const RULES_OF_JUDGMENT: [&str; 6] = [
     "The agent is trusted and works for the owner: it is allowed unless a check clearly finds its problem. Unsure means no.",
@@ -364,9 +367,10 @@ impl Gatekeeper {
         let p = self
             .ask(&asked, now.timestamp(), &clock, action, &mut json!({}))
             .await?;
+        let denied_at = if asked.agent { CLEAR_P } else { OWNER_DENIED_P };
         Ok(Preview {
-            denied: p.denied.is_some_and(|p| p >= CLEAR_P),
-            covered: verdict(P { denied: None, ..p }).is_ok(),
+            denied: p.denied.is_some_and(|p| p >= denied_at),
+            covered: verdict(P { denied: None, ..p }, CLEAR_P).is_ok(),
         })
     }
 
@@ -407,7 +411,7 @@ impl Gatekeeper {
                 let p = self
                     .ask(&asked, now.timestamp(), &clock, action, gate)
                     .await?;
-                return verdict(p);
+                return verdict(p, OWNER_DENIED_P);
             }
             Caller::Agent { uid, intent } => (uid, intent),
         };
@@ -424,25 +428,30 @@ impl Gatekeeper {
             gate["intent"] = json!(key);
             gate["owner_dm"] = json!(thread.is_owner_dm);
             gate["later_owner_messages"] = json!(thread.later_owner.len());
+            // The ledger is the audit's: one that can't be read is noted
+            // in the gate record, and decides nothing.
             let hold = self.ledger.hold(&key).await;
-            let mut done = hold
-                .done()
-                .map_err(|why| unavailable("ledger_unreadable", &why))?;
-            // What this carries on (the plan whose step paused), by its
-            // entry on this same intent, is the same use of it, not another:
-            // it is not recorded again. An entry is carried on once.
-            continued = continues
-                .filter(|allowed| allowed.intent == key)
-                .and_then(|allowed| {
-                    done.iter()
-                        .position(|d| !d.continued && d.id.as_ref() == Some(&allowed.entry))
-                })
-                .map(|at| done.remove(at));
-            if continued.is_some() {
-                gate["continues"] = json!(true);
+            match hold.done() {
+                Ok(mut done) => {
+                    // What this carries on (the plan whose step paused), by
+                    // its entry on this same intent, is the same use of it,
+                    // not another: it is not recorded again. An entry is
+                    // carried on once.
+                    continued = continues
+                        .filter(|allowed| allowed.intent == key)
+                        .and_then(|allowed| {
+                            done.iter()
+                                .position(|d| !d.continued && d.id.as_ref() == Some(&allowed.entry))
+                        })
+                        .map(|at| done.remove(at));
+                    if continued.is_some() {
+                        gate["continues"] = json!(true);
+                    }
+                    gate["already_done"] = json!(done.len());
+                    held = Some(hold);
+                }
+                Err(why) => gate["ledger_failed"] = json!(why),
             }
-            gate["already_done"] = json!(done.len());
-            held = Some(hold);
         }
         let asked = Asked {
             rule: rule.as_deref(),
@@ -453,7 +462,7 @@ impl Gatekeeper {
             .ask(&asked, now.timestamp(), &clock, action, gate)
             .await?;
         // A refusal says when the citation gave no conversation to judge by.
-        verdict(p).map_err(|mut failure| {
+        verdict(p, CLEAR_P).map_err(|mut failure| {
             if let Some(unread) = unread {
                 failure.details["chat"] = json!(unread);
             }
@@ -466,7 +475,10 @@ impl Gatekeeper {
                 .record(now.timestamp(), action.get())
                 .map(|id| gate["entry"] = json!(id)),
         };
-        recorded.map_err(|why| unavailable("ledger_unwritable", &why))
+        if let Err(why) = recorded {
+            gate["ledger_failed"] = json!(why);
+        }
+        Ok(())
     }
 
     /// The owner's conversation the agent cites, as the host reads it, or
@@ -638,12 +650,14 @@ struct P {
     unconnected: Option<f64>,
 }
 
-/// Allowed unless a check clearly finds its problem.
-fn verdict(p: P) -> Result<(), Failure> {
+/// Allowed unless a check finds its problem: the device rule's from
+/// `denied_at`, an agent's other checks from `CLEAR_P`.
+fn verdict(p: P, denied_at: f64) -> Result<(), Failure> {
     let found = [p.denied, p.exfiltration, p.unconnected]
         .into_iter()
+        .zip([denied_at, CLEAR_P, CLEAR_P])
         .zip(CHECKS)
-        .find(|(p, _)| p.is_some_and(|p| p >= CLEAR_P));
+        .find(|((p, at), _)| p.is_some_and(|p| p >= *at));
     match found {
         Some((_, (_, reason, line))) => Err(denied(reason, line.into())),
         None => Ok(()),
@@ -680,7 +694,7 @@ fn next_step(reason: &str) -> String {
         "login_site_mismatch" => "Fill this login only on one of its saved sites.".into(),
         "model_failed" | "judge_malformed" => "Retry later. If it keeps failing, tell the owner the host's decision model is failing (a host out of Plow credits fails until the owner adds them).".into(),
         "too_large" => "Send a smaller action (shorter stdin, fewer plan steps), or cite a later owner message with less after it.".into(),
-        "device_rule_unreadable" | "ledger_unreadable" | "ledger_unwritable" | "audit_unwritable" => "Tell the owner the host's gatekeeper files can't be read or written; nothing judged runs there until they fix it.".into(),
+        "device_rule_unreadable" | "audit_unwritable" => "Tell the owner the host's gatekeeper files can't be read or written; nothing judged runs there until they fix it.".into(),
         other => unreachable!("a refusal reason with no next step: {other}"),
     }
 }

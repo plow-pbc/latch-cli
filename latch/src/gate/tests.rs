@@ -842,6 +842,61 @@ async fn allowed_actions_are_recorded_on_their_intent_and_never_spend_it() {
     assert_eq!(third.gate["already_done"], 2);
 }
 
+/// The ledger only keeps a record: one that can't be read or written is
+/// noted in the gate record, and the action still runs.
+#[tokio::test]
+async fn a_ledger_that_fails_never_refuses() {
+    let thread = asked("Send Bob the invoice");
+    let host = host(Judge::new(|_| Some(NOTHING)), Ok(Some(thread.clone())));
+    let ledger = host.dir.path().join("gatekeeper/ledger");
+    std::fs::create_dir_all(&ledger).unwrap();
+    let path = ledger.join(format!(
+        "{}.jsonl",
+        crate::state::to_hex(&sha2::Sha256::digest(thread.key().as_bytes()))
+    ));
+    std::fs::write(&path, "not json\n").unwrap();
+    let unreadable = host.agent(Some(CITED), send_mail()).await;
+    assert_eq!(reason(&unreadable), "allow");
+    assert!(
+        unreadable.gate["ledger_failed"].is_string(),
+        "{}",
+        unreadable.gate
+    );
+    assert!(unreadable.gate.get("entry").is_none());
+    std::fs::remove_dir_all(&ledger).unwrap();
+    std::fs::write(&ledger, "a file where the folder goes").unwrap();
+    let unwritable = host.agent(Some(CITED), send_mail()).await;
+    assert_eq!(reason(&unwritable), "allow");
+    assert!(
+        unwritable.gate["ledger_failed"].is_string(),
+        "{}",
+        unwritable.gate
+    );
+}
+
+/// The owner's own call is denied by the device rule from P 0.5, as
+/// before; an agent's checks refuse only from `CLEAR_P`.
+#[tokio::test]
+async fn the_owners_call_is_denied_from_half_and_an_agents_from_the_clear_line() {
+    let host = host(
+        Judge::new(|_| Some((0.6, 0.0, 0.0))),
+        Ok(Some(asked("Send Bob the invoice"))),
+    );
+    host.deny("Never email anyone at example.com.");
+    assert_eq!(reason(&host.owner(send_mail()).await), "denied_by_rule");
+    assert_eq!(reason(&host.agent(Some(CITED), send_mail()).await), "allow");
+    let action = serde_json::value::to_raw_value(&send_mail()).unwrap();
+    let rule = "Never email anyone at example.com.";
+    let owner = host.keeper.preview(rule, None, &action).await.unwrap();
+    assert!(owner.denied);
+    let agent = host
+        .keeper
+        .preview(rule, Some("Send Bob the invoice"), &action)
+        .await
+        .unwrap();
+    assert!(!agent.denied);
+}
+
 /// A paused step of an allowed plan carries that plan on, by its ledger
 /// entry, once: it isn't recorded as another action on the intent.
 #[tokio::test]

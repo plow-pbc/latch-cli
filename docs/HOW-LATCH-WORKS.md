@@ -184,7 +184,9 @@ without a model call.
   `rules.archived-<seconds>` when the host starts, and never read.
 - **Recorded, never spent.** Each action allowed on a cited message is
   recorded against it in the host's `gatekeeper/ledger/`, for the audit;
-  what was done never refuses another. The ledger is per host.
+  what was done never refuses another, and a ledger that can't be read or
+  written is noted in the gate record (`ledger_failed`) and refuses
+  nothing. The ledger is per host.
 - **Fresh every time.** Your messages and the device rule are read again
   at every judgment, so a “stop” or a rule change counts from the next call.
 - **Every refusal says what to do next** in its `next` field.
