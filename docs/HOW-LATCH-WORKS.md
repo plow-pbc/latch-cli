@@ -182,11 +182,9 @@ without a model call.
   `latch update` ask “Always deny:” once when there is none. An older
   host's `rules/` folder of grant-style rules is moved aside to
   `rules.archived-<seconds>` when the host starts, and never read.
-- **Recorded, never spent.** Each action allowed on a cited message is
-  recorded against it in the host's `gatekeeper/ledger/`, for the audit;
-  what was done never refuses another, and a ledger that can't be read or
-  written is noted in the gate record (`ledger_failed`) and refuses
-  nothing. The ledger is per host.
+- **Never spent.** What was done before never refuses another action: a
+  repeat is judged like the first. Each allowed action's gate record is in
+  the audit.
 - **Fresh every time.** Your messages and the device rule are read again
   at every judgment, so a “stop” or a rule change counts from the next call.
 - **Every refusal says what to do next** in its `next` field.
@@ -243,8 +241,7 @@ without a model call.
   sealed the same way. `latch audit judge ID` shows one, ID being the
   record's `gate.kept_request`; each judgment is one call. The record's
   `gate` also holds its probabilities (`p.denied`, `p.exfiltration`,
-  `p.unconnected`), prompt and model, cost, the device rule's revision and
-  how many actions were already allowed on the intent. Activity's “Gatekeeper requests” opens them. They never hold a
+  `p.unconnected`), prompt and model, cost and the device rule's revision. Activity's “Gatekeeper requests” opens them. They never hold a
   vault value, and agents can't read them.
 
 ## 6. Managing a host

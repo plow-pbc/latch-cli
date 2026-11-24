@@ -68,9 +68,8 @@ a review slot. Flag a diff that *widens* one, not the limit itself:
   allowed unless the host's device rule denies it, instead of being judged as
   the agent's call. The docs tell agents to use their own credential; the
   host cannot tell.
-- **The gatekeeper does not stop repeats.** Its ledger records what ran per
-  cited intent, per host, for the audit; another host gating the same
-  agent keeps its own. Repeats are left to request ids
+- **The gatekeeper does not stop repeats.** Each judgment is made alone;
+  repeats are left to request ids
   (`duplicate_request`), exit 5's "outcome unknown" and the agent's
   guidance to check before resending.
 - **The state folder is protected only from latch's own workers.** Root, and

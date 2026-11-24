@@ -218,7 +218,7 @@ decision route and what came back. ID is the `kept_request` in a record's
 `exfiltration`, `unconnected`; null when not asked); `details.gate` also
 names the caller, the class (`free` or `judged`), `chat` (`read`, or why
 the citation gave no conversation), the intent cited, the device rule's
-revision, the prompt, model and cost, `already_done`,
+revision, the prompt, model and cost, `owner_dm`,
 `later_owner_messages`, `context` (`shown` of `of`), `thread_read_ms`, the
 verdict, `latency_ms` and, for an allowed judged action, `gate_record`:
 the audit record (op `gate`) written before it ran.

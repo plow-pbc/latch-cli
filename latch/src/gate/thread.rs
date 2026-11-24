@@ -75,7 +75,7 @@ pub struct Thread {
 }
 
 impl Thread {
-    /// The ledger's key for every action taken on this intent.
+    /// The cited message, as the audit names it.
     pub fn key(&self) -> String {
         format!("swarm:{}/{}", self.room, self.event)
     }

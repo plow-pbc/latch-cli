@@ -528,7 +528,7 @@ async fn live_three_checks() {
         let action = serde_json::value::to_raw_value(&case.action).unwrap();
         let intent = case.thread.as_ref().map(|_| CITED);
         let caller = Caller::Agent { uid: AGENT, intent };
-        let judgment = keeper.judge(caller, &action, None).await;
+        let judgment = keeper.judge(caller, &action).await;
         let line = json!({"case": case.name, "verdict": judgment.gate["verdict"],
                           "p": judgment.gate["p"], "chat": judgment.gate["chat"]});
         println!("LIVE {line}");

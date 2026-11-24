@@ -223,12 +223,12 @@ impl Host {
     async fn agent(&self, intent: Option<&str>, action: Value) -> Judgment {
         let action = serde_json::value::to_raw_value(&action).unwrap();
         let caller = Caller::Agent { uid: AGENT, intent };
-        self.keeper.judge(caller, &action, None).await
+        self.keeper.judge(caller, &action).await
     }
 
     async fn owner(&self, action: Value) -> Judgment {
         let action = serde_json::value::to_raw_value(&action).unwrap();
-        self.keeper.judge(Caller::Owner, &action, None).await
+        self.keeper.judge(Caller::Owner, &action).await
     }
 }
 
@@ -415,7 +415,7 @@ async fn a_missing_or_bad_citation_is_judged_without_a_conversation() {
         let host = host(Judge::new(by_words), read);
         let action = serde_json::value::to_raw_value(&send_mail()).unwrap();
         let caller = Caller::Agent { uid, intent };
-        let judgment = host.keeper.judge(caller, &action, None).await;
+        let judgment = host.keeper.judge(caller, &action).await;
         // Read with the haircut, the chat check would have refused it.
         assert_eq!(reason(&judgment), "allow", "{unread}");
         assert_eq!(judgment.gate["chat"], unread);
@@ -814,66 +814,6 @@ async fn an_allowed_action_runs_only_once_its_gate_record_is_written() {
     assert_eq!(refused.gate["verdict"], "audit_unwritable");
 }
 
-/// Each action allowed on a cited message is recorded against it, one at a
-/// time, the alias of its room counting as the room; what was done never
-/// refuses another, and the judge is not shown it.
-#[tokio::test]
-async fn allowed_actions_are_recorded_on_their_intent_and_never_spend_it() {
-    let mut judge = Judge::new(|state| {
-        assert!(state.get("already_done").is_none(), "{state}");
-        Some(NOTHING)
-    });
-    Arc::get_mut(&mut judge).unwrap().takes = Duration::from_millis(50);
-    let host = host(judge, Ok(Some(asked("Buy this once"))));
-    let buy = json!({"kind": "vault_fill", "site": "shop.example",
-           "item": {"kind": "card", "title": "Visa"}, "fields": ["number"]});
-    let (a, b) = tokio::join!(
-        host.agent(Some("#scout-dm:plow.co/$ask"), buy.clone()),
-        host.agent(Some(CITED), buy.clone())
-    );
-    assert!(a.verdict.is_ok() && b.verdict.is_ok());
-    let counts: Vec<&Value> = [&a, &b].iter().map(|j| &j.gate["already_done"]).collect();
-    assert!(
-        counts.contains(&&json!(0)) && counts.contains(&&json!(1)),
-        "{counts:?}"
-    );
-    let third = host.agent(Some(CITED), buy).await;
-    assert_eq!(reason(&third), "allow");
-    assert_eq!(third.gate["already_done"], 2);
-}
-
-/// The ledger only keeps a record: one that can't be read or written is
-/// noted in the gate record, and the action still runs.
-#[tokio::test]
-async fn a_ledger_that_fails_never_refuses() {
-    let thread = asked("Send Bob the invoice");
-    let host = host(Judge::new(|_| Some(NOTHING)), Ok(Some(thread.clone())));
-    let ledger = host.dir.path().join("gatekeeper/ledger");
-    std::fs::create_dir_all(&ledger).unwrap();
-    let path = ledger.join(format!(
-        "{}.jsonl",
-        crate::state::to_hex(&sha2::Sha256::digest(thread.key().as_bytes()))
-    ));
-    std::fs::write(&path, "not json\n").unwrap();
-    let unreadable = host.agent(Some(CITED), send_mail()).await;
-    assert_eq!(reason(&unreadable), "allow");
-    assert!(
-        unreadable.gate["ledger_failed"].is_string(),
-        "{}",
-        unreadable.gate
-    );
-    assert!(unreadable.gate.get("entry").is_none());
-    std::fs::remove_dir_all(&ledger).unwrap();
-    std::fs::write(&ledger, "a file where the folder goes").unwrap();
-    let unwritable = host.agent(Some(CITED), send_mail()).await;
-    assert_eq!(reason(&unwritable), "allow");
-    assert!(
-        unwritable.gate["ledger_failed"].is_string(),
-        "{}",
-        unwritable.gate
-    );
-}
-
 /// The owner's own call is denied by the device rule from P 0.5, as
 /// before; an agent's checks refuse only from `CLEAR_P`.
 #[tokio::test]
@@ -895,91 +835,6 @@ async fn the_owners_call_is_denied_from_half_and_an_agents_from_the_clear_line()
         .await
         .unwrap();
     assert!(!agent.denied);
-}
-
-/// A paused step of an allowed plan carries that plan on, by its ledger
-/// entry, once: it isn't recorded as another action on the intent.
-#[tokio::test]
-async fn a_confirmed_step_carries_on_its_allowed_plan_once() {
-    let host = host(
-        Judge::new(|_| Some(NOTHING)),
-        Ok(Some(asked("Send Hoa a text: any time after 2pm"))),
-    );
-    let caller = Caller::Agent {
-        uid: AGENT,
-        intent: Some(CITED),
-    };
-    let raw = |action: Value| serde_json::value::to_raw_value(&action).unwrap();
-    let plan = raw(
-        json!({"kind": "browser_plan", "page": {"url": "https://voice.google.com"},
-        "steps": [{"step": "type e55 (textbox \"Text message\") \"Any time after 2pm works\""},
-                  {"step": "click e58 (button \"Send message\")"}]}),
-    );
-    let confirmed = raw(
-        json!({"kind": "confirmed_step", "page": {"url": "https://voice.google.com"},
-        "action": "click button \"Send message\"",
-        "fields": ["textbox \"Text message\": \"Any time after 2pm works\""]}),
-    );
-    let first = host.keeper.judge(caller, &plan, None).await;
-    assert_eq!(reason(&first), "allow");
-    let on = |intent: &str, entry: &str| Allowed {
-        intent: intent.into(),
-        entry: entry.into(),
-    };
-    let key = first.gate["intent"].as_str().unwrap();
-    let allowed = on(key, first.gate["entry"].as_str().unwrap());
-    let carried = host.keeper.judge(caller, &confirmed, Some(&allowed)).await;
-    assert_eq!(reason(&carried), "allow");
-    assert_eq!(carried.gate["continues"], true);
-    assert_eq!(carried.gate["already_done"], 0);
-    assert!(carried.gate.get("entry").is_none());
-    // Carried on once: again, or on an entry the ledger lacks or another
-    // ask's, it is one more action of its own.
-    let elsewhere = on("swarm:!other:plow.co/$ask", &allowed.entry);
-    for continues in [
-        Some(&allowed),
-        None,
-        Some(&on(key, "0000000000000000")),
-        Some(&elsewhere),
-    ] {
-        let judged = host.keeper.judge(caller, &confirmed, continues).await;
-        assert_eq!(reason(&judged), "allow", "{continues:?}");
-        assert_eq!(judged.gate.get("continues"), None, "{continues:?}");
-        assert!(judged.gate["entry"].is_string(), "{continues:?}");
-    }
-}
-
-/// Two identical plans, each with its paused Send: each confirmation
-/// carries on only its own plan's entry, once.
-#[tokio::test]
-async fn identical_plans_are_each_carried_on_by_their_own_confirmation_only() {
-    let thread = asked("Text Hoa good morning every morning");
-    let key = thread.key();
-    let host = host(Judge::new(|_| Some(NOTHING)), Ok(Some(thread)));
-    let caller = Caller::Agent {
-        uid: AGENT,
-        intent: Some(CITED),
-    };
-    let plan = serde_json::value::to_raw_value(&send_mail()).unwrap();
-    let entry = |judgment: &Judgment| Allowed {
-        intent: key.clone(),
-        entry: judgment.gate["entry"].as_str().unwrap().into(),
-    };
-    let e1 = host.keeper.judge(caller, &plan, None).await;
-    let e2 = host.keeper.judge(caller, &plan, None).await;
-    let (c1, c2) = (entry(&e1), entry(&e2));
-    assert_ne!(c1, c2);
-    // C1, then C2: each carries on its own entry, the other counted done.
-    for c in [&c1, &c2] {
-        let carried = host.keeper.judge(caller, &plan, Some(c)).await;
-        assert_eq!(carried.gate["continues"], true, "{c:?}");
-        assert_eq!(carried.gate["already_done"], 1, "{c:?}");
-    }
-    // Either again: its entry is spent.
-    for c in [&c1, &c2] {
-        let again = host.keeper.judge(caller, &plan, Some(c)).await;
-        assert_eq!(again.gate.get("continues"), None, "{c:?}");
-    }
 }
 
 #[tokio::test]

@@ -38,7 +38,7 @@ conformance!(
     the_owners_devices_are_judged_as_the_owner_against_the_device_rule,
     a_local_address_is_refused_before_the_judge_or_an_engine,
     an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs,
-    a_confirmed_send_carries_on_its_allowed_plan,
+    a_confirmed_send_is_judged_and_goes,
     one_approved_card_fill_covers_its_checkouts_address,
 );
 
@@ -1468,44 +1468,41 @@ async fn composed(host: &Host, site: &str, engine: &str, message: &str) -> (Stri
 }
 
 /// A Send the gatekeeper allowed in a plan and the risk decision paused:
-/// its confirmation carries that plan on, so it isn't recorded as another
-/// action on the ask, and it goes; a second send is its own action, paused
-/// again by the risk decision.
-async fn a_confirmed_send_carries_on_its_allowed_plan(engine: &str) {
+/// its confirmation is judged on what it sends, and goes; a second send
+/// is paused again by the risk decision.
+async fn a_confirmed_send_is_judged_and_goes(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let (site, _) = serve_site();
     let judge = Judge::new(|_| COVERED);
     let mut host = Host::start(&state, &site, &judge);
     host.browsers.provider = Some(Arc::new(Wary));
     let (id, send) = composed(&host, &site, engine, "Any time after 2pm works").await;
-    let (clicked, first) = host
+    let (clicked, _) = host
         .agent("do", &id, act(&format!("click {send}")), None)
         .await;
-    let done = first["gate"]["already_done"].as_u64().unwrap();
     let failure = clicked.unwrap_err();
     assert_eq!(failure.code, "confirm_needed", "{failure:?}");
     let confirmation = failure.details["stop"]["confirmation"]["id"]
         .as_str()
         .unwrap()
         .to_string();
+    let judged = judge.judged();
     let request = format!("r{:012x}", rand::random::<u64>() & 0xffff_ffff_ffff);
     let args = json!({"request": request, "plan": {"steps": []}, "confirm": confirmation});
     let (sent, audit) = host.agent("do", &id, args, None).await;
     sent.unwrap();
-    assert_eq!(audit["gate"]["continues"], true);
+    assert_eq!(judge.judged(), judged + 1, "the confirmation is judged");
+    assert_eq!(judge.last_action()["kind"], "confirmed_step");
+    assert_eq!(audit["gate"]["verdict"], "allow");
     assert!(
         shows(&host, &id)
             .await
             .contains("sent: Any time after 2pm works")
     );
-    assert!(audit["gate"].get("entry").is_none(), "{audit:?}");
-    // Another send on the same ask: allowed, and paused again. Only the
-    // first send's plan was recorded since, not its confirmation.
-    let (again, audit) = host
+    let (again, _) = host
         .agent("do", &id, act(&format!("click {send}")), None)
         .await;
     assert_eq!(again.unwrap_err().code, "confirm_needed");
-    assert_eq!(audit["gate"]["already_done"], done + 1, "{audit:?}");
     host.look("close", &id, json!({})).await;
 }
 

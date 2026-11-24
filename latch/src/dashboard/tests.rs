@@ -119,7 +119,7 @@ fn busy() -> Dashboard {
     );
     let gate = json!({"caller": "agent", "class": "judged", "verdict": "unconnected",
         "p": {"exfiltration": 0.02, "unconnected": 0.91, "denied": 0.03}, "model": "jev-1.14",
-        "device_rule": "aaaaaaaaaaaaaaaa", "intent": "swarm:!dm:plow.co/$ask", "already_done": 2});
+        "device_rule": "aaaaaaaaaaaaaaaa", "intent": "swarm:!dm:plow.co/$ask"});
     run(
         &dashboard,
         agent(),
@@ -463,7 +463,7 @@ fn the_decision_tab_shows_the_judgment_as_recorded_and_no_more() {
         "{decision}"
     );
     assert!(
-        decision.contains("Cited: swarm:!dm:plow.co/$ask; done before on it: 2"),
+        decision.contains("Cited: swarm:!dm:plow.co/$ask; message text not kept here"),
         "{decision}"
     );
     assert!(

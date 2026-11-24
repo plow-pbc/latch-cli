@@ -16,13 +16,12 @@
 //! message it acts on (`--intent <room>/<event>`); the host reads it itself,
 //! as one of the owner's own devices (`thread.rs`), with the owner's later
 //! messages and the messages around it: the agent never supplies owner
-//! text. Any room may be cited, a group's included, since a conversation
-//! can only add a reason to refuse. A citation that is missing,
-//! unreadable, not the owner's, in a closed thread, or whose later history
-//! could not all be read gives no conversation: the action
-//! is then judged on `exfiltration` and `denied` alone, and `unconnected`
-//! is not asked. Each action allowed on a readable citation is recorded
-//! against it (`ledger.rs`), for the audit.
+//! text. Any room the owner and the agent have both joined may be cited, a
+//! group's included, since a conversation can only add a reason to refuse.
+//! A citation that is missing, unreadable, not the owner's, in a room they
+//! don't share, in a closed thread, or whose later history could not all be
+//! read gives no conversation: the action is then judged on `exfiltration`
+//! and `denied` alone, and `unconnected` is not asked.
 //!
 //! The owner, at one of their own machines, cites nothing: their call is
 //! judged against the device rule alone. Anything that keeps a judgment
@@ -36,7 +35,6 @@ mod action;
 pub mod client;
 #[cfg(test)]
 pub mod fake;
-pub mod ledger;
 pub(crate) mod owner;
 pub mod requests;
 pub mod rules;
@@ -64,7 +62,6 @@ use crate::model::{
 use crate::state::to_hex;
 pub use action::{Class, classify, gated};
 pub(crate) use action::{JUDGED_STDIN, judged_stdin};
-use ledger::Ledger;
 use thread::{IntentRef, Thread, ThreadSource};
 
 /// The decision model the gatekeeper asks, on Plow's decision route.
@@ -121,13 +118,12 @@ const EXFILTRATION_Q: &str = "Does this proposed action clearly send the owner's
 const UNCONNECTED_Q: &str = "Think how reasonable it is to go from what the owner has been saying to this agent (the cited message, the owner's later messages and the context they answer) to this proposed action. Is it clearly unreasonable? Answer yes only if no reasonable assistant would get there: the action has nothing to do with what was asked or discussed, goes against what the owner said (such as a later stop, or paying or sending to someone other than whom they named, or more than they named), or does something drastic the owner never asked for (such as dropping a database when asked to fix a typo, or paying what the owner only passed on from someone else). Steps a reasonable assistant would take to do the task, named or not, are connected: answer no. If unsure, answer no.";
 
 /// The host's gatekeeper: the decision model, where it reads cited
-/// intents, the device rule and agent map, the ledger, and the state
-/// folder it keeps each call's request in.
+/// intents, the device rule and agent map, and the state folder it keeps
+/// each call's request in.
 pub struct Gatekeeper {
     provider: Arc<dyn Provider>,
     threads: Box<dyn ThreadSource>,
     store: rules::Store,
-    ledger: Ledger,
     requests: Option<PathBuf>,
     audit: Option<Arc<Mutex<AuditLog>>>,
 }
@@ -172,14 +168,6 @@ impl Caller<'_> {
     }
 }
 
-/// An action this host allowed on an intent (its ledger key,
-/// `Thread::key`), by its ledger entry: what a later action can carry on.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Allowed {
-    pub intent: String,
-    pub entry: String,
-}
-
 /// One caller's gate, for the operations of one request.
 #[derive(Clone, Copy)]
 pub struct Gate<'a> {
@@ -194,20 +182,8 @@ impl Gate<'_> {
     /// action the judge was asked about runs only once its gate record is
     /// in the host's audit log, named in `gate` as `gate_record`.
     pub async fn judge(&self, action: &impl Serialize) -> Judgment {
-        self.judge_continuing(action, None).await
-    }
-
-    /// As `judge`, for an action that carries on `continues`, an action
-    /// this host allowed earlier (a paused step of an allowed plan): on the
-    /// intent it was allowed on, that one is no earlier use of it, and this
-    /// is not recorded as another.
-    pub async fn judge_continuing(
-        &self,
-        action: &impl Serialize,
-        continues: Option<&Allowed>,
-    ) -> Judgment {
         let action = serde_json::value::to_raw_value(action).expect("an action serializes");
-        let mut judgment = self.keeper.judge(self.caller, &action, continues).await;
+        let mut judgment = self.keeper.judge(self.caller, &action).await;
         if judgment.verdict.is_ok() && judgment.gate.get("prompt").is_some() {
             match self
                 .keeper
@@ -237,7 +213,6 @@ impl Gatekeeper {
             provider,
             threads,
             store: rules::Store::new(state_dir),
-            ledger: Ledger::new(state_dir),
             requests: None,
             audit: None,
         }
@@ -297,17 +272,11 @@ impl Gatekeeper {
         model::host_provider(state_dir, MODEL).map(Arc::from)
     }
 
-    /// Whether `action` by `caller` may run; see `Gate::judge_continuing`
-    /// for `continues`.
-    pub async fn judge(
-        &self,
-        caller: Caller<'_>,
-        action: &RawValue,
-        continues: Option<&Allowed>,
-    ) -> Judgment {
+    /// Whether `action` by `caller` may run.
+    pub async fn judge(&self, caller: Caller<'_>, action: &RawValue) -> Judgment {
         let started = Instant::now();
         let mut gate = json!({"caller": caller.kind()});
-        let verdict = self.decide(caller, action, continues, &mut gate).await;
+        let verdict = self.decide(caller, action, &mut gate).await;
         gate["verdict"] = json!(match &verdict {
             Ok(()) => "allow",
             Err(failure) => failure.details["reason"].as_str().unwrap_or(&failure.code),
@@ -378,7 +347,6 @@ impl Gatekeeper {
         &self,
         caller: Caller<'_>,
         action: &RawValue,
-        continues: Option<&Allowed>,
         gate: &mut Value,
     ) -> Result<(), Failure> {
         let shown: Value = serde_json::from_str(action.get()).expect("the action is JSON");
@@ -419,39 +387,10 @@ impl Gatekeeper {
         let unread = chat.as_ref().err().copied();
         gate["chat"] = json!(unread.unwrap_or("read"));
         let chat = chat.ok();
-        let mut held = None;
-        let mut continued = None;
         if let Some(thread) = &chat {
-            // The ledger's key is the message as the reader resolved it, so
-            // an alias of the room counts as the room.
-            let key = thread.key();
-            gate["intent"] = json!(key);
+            gate["intent"] = json!(thread.key());
             gate["owner_dm"] = json!(thread.is_owner_dm);
             gate["later_owner_messages"] = json!(thread.later_owner.len());
-            // The ledger is the audit's: one that can't be read is noted
-            // in the gate record, and decides nothing.
-            let hold = self.ledger.hold(&key).await;
-            match hold.done() {
-                Ok(mut done) => {
-                    // What this carries on (the plan whose step paused), by
-                    // its entry on this same intent, is the same use of it,
-                    // not another: it is not recorded again. An entry is
-                    // carried on once.
-                    continued = continues
-                        .filter(|allowed| allowed.intent == key)
-                        .and_then(|allowed| {
-                            done.iter()
-                                .position(|d| !d.continued && d.id.as_ref() == Some(&allowed.entry))
-                        })
-                        .map(|at| done.remove(at));
-                    if continued.is_some() {
-                        gate["continues"] = json!(true);
-                    }
-                    gate["already_done"] = json!(done.len());
-                    held = Some(hold);
-                }
-                Err(why) => gate["ledger_failed"] = json!(why),
-            }
         }
         let asked = Asked {
             rule: rule.as_deref(),
@@ -467,18 +406,7 @@ impl Gatekeeper {
                 failure.details["chat"] = json!(unread);
             }
             failure
-        })?;
-        let Some(held) = held else { return Ok(()) };
-        let recorded = match continued.and_then(|entry| entry.id) {
-            Some(id) => held.continued(now.timestamp(), &id),
-            None => held
-                .record(now.timestamp(), action.get())
-                .map(|id| gate["entry"] = json!(id)),
-        };
-        if let Err(why) = recorded {
-            gate["ledger_failed"] = json!(why);
-        }
-        Ok(())
+        })
     }
 
     /// The owner's conversation the agent cites, as the host reads it, or

@@ -43,7 +43,7 @@ use super::model::{self, CHECKABLE_P, RISKY_P};
 use super::plan::{Check, CheckKind, Literal, Op, Plan, Step};
 use super::session::Session;
 use crate::failure::{Code, Exit, Failure, code};
-use crate::gate::{Allowed, Caller, Gate};
+use crate::gate::{Caller, Gate};
 use crate::model::Model;
 use crate::state::to_hex;
 
@@ -71,9 +71,6 @@ pub struct Confirmation {
     /// around it, hashed: any change makes the confirmation stale.
     fingerprint: String,
     used: bool,
-    /// The plan the gate allowed in the run that paused this step, as it
-    /// allowed it: carrying the step out carries that plan on.
-    continues: Option<Allowed>,
 }
 
 enum Confirms {
@@ -260,7 +257,7 @@ pub async fn run(
     entry: &Entry,
     session: &str,
     caller: &str,
-    gate: Option<(Gate<'_>, Option<Allowed>)>,
+    gate: Option<Gate<'_>>,
     args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
@@ -404,9 +401,8 @@ pub async fn run(
         actions: 0,
         dispatched: HashSet::new(),
         choice: None,
-        gate: gate.as_ref().map(|(gate, _)| *gate),
+        gate,
         judgment: None,
-        allowed: gate.and_then(|(_, allowed)| allowed),
         checking: None,
     };
     let mut stop = None;
@@ -639,8 +635,6 @@ struct Run<'a> {
     gate: Option<Gate<'a>>,
     /// The gatekeeper's judgment of the fill being made, for its record.
     judgment: Option<Value>,
-    /// This run's plan as the gate allowed it.
-    allowed: Option<Allowed>,
     /// What the session's checkout does with the fill being made.
     checking: Option<judged::Checking>,
 }
@@ -830,7 +824,6 @@ impl Run<'_> {
             uid: reviewed["uid"].clone(),
             fingerprint: fingerprint(reviewed, false),
             used: false,
-            continues: self.allowed.clone(),
         };
         self.entry
             .confirmations
@@ -861,7 +854,6 @@ impl Run<'_> {
                     c.document.clone(),
                     c.uid.clone(),
                     c.fingerprint.clone(),
-                    c.continues.clone(),
                 )
             })
         };
@@ -873,7 +865,7 @@ impl Run<'_> {
             failure.details = json!({"confirmation": id});
             failure
         };
-        let Some((used, kind, snapshot, target, document, uid, print, continues)) = taken else {
+        let Some((used, kind, snapshot, target, document, uid, print)) = taken else {
             return Err(stale("does not exist in this session"));
         };
         self.audit.insert("confirmation".into(), json!(id));
@@ -924,7 +916,7 @@ impl Run<'_> {
         // nothing.
         let guard = match gate {
             Some(gate) => {
-                self.judge_confirmed(gate, n, id, &literal, &reviewed, continues.as_ref())
+                self.judge_confirmed(gate, n, id, &literal, &reviewed)
                     .await?;
                 (fingerprint(&reviewed, true), enter, true)
             }
@@ -953,7 +945,6 @@ impl Run<'_> {
         id: &str,
         literal: &Literal,
         reviewed: &Value,
-        continues: Option<&Allowed>,
     ) -> Result<(), Failure> {
         let enter = presses_enter(literal);
         let typing = literal.op == Op::Type;
@@ -965,13 +956,13 @@ impl Run<'_> {
         }
         let action = judged::confirmed_step(self.browsers, what, reviewed);
         let filled = self.entry.filled();
-        let judged = judged::judge(Some(gate), action, &filled, continues, self.audit).await;
+        let judged = judged::judge(Some(gate), action, &filled, self.audit).await;
         if judged.is_err() {
             self.records
                 .push(json!({"step": n, "op": literal.op, "ref": literal.target,
                                      "confirmation": id, "dispatch": "refused"}));
         }
-        judged.map(drop)
+        judged
     }
 
     /// One action, journaled before it is sent and once its result is known.
