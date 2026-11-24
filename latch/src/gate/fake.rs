@@ -13,10 +13,10 @@ use serde_json::{Value, json};
 pub const AGENT: &str = "0123456789abcdef0123456789abcdef";
 pub const LINE: &str = "line_agent";
 
-/// The probabilities of COVERED, NOT_COVERED and FORBIDDEN for a state,
-/// or none for a decision route that fails: COVERED answers whether the
-/// cited intent covers the action, FORBIDDEN whether the device rule
-/// denies it.
+/// The probabilities of CONNECTED, UNCONNECTED and FORBIDDEN for a state,
+/// or none for a decision route that fails: UNCONNECTED answers the chat
+/// check, FORBIDDEN the device rule's. This stand-in never finds
+/// exfiltration.
 pub type Decide = fn(&Value) -> Option<[f64; 3]>;
 
 /// What the synthetic Plow holds: who each caller's key is, and how the
@@ -57,29 +57,20 @@ impl World {
         if method == "POST" && path == "/v1/decisions" {
             let asked: Value = serde_json::from_slice(body).unwrap();
             self.asked.push(asked["state"].clone());
-            let Some([c, _, f]) = self.decide.and_then(|decide| decide(&asked["state"])) else {
+            let Some([_, u, f]) = self.decide.and_then(|decide| decide(&asked["state"])) else {
                 return (503, json!({"detail": "unavailable"}));
             };
-            // COVERED is the intent's yes, FORBIDDEN the device rule's.
             let answers: serde_json::Map<String, Value> = asked["questions"]
                 .as_object()
                 .into_iter()
                 .flatten()
-                .map(|(id, question)| {
-                    let p = if id == "denied" { f } else { c };
-                    // A choice (`why`) answers its first option.
-                    let answer = match question["criteria"].as_object() {
-                        Some(options) => {
-                            let first = options.keys().next().cloned().unwrap_or_default();
-                            let probabilities: serde_json::Map<String, Value> = options
-                                .keys()
-                                .map(|o| (o.clone(), json!(f64::from(u8::from(*o == first)))))
-                                .collect();
-                            json!({"type": "choice", "choice": first, "probabilities": probabilities})
-                        }
-                        None => json!({"type": "noul", "noul": p}),
+                .map(|(id, _)| {
+                    let p = match id.as_str() {
+                        "denied" => f,
+                        "unconnected" => u,
+                        _ => 0.0,
                     };
-                    (id.clone(), answer)
+                    (id.clone(), json!({"type": "noul", "noul": p}))
                 })
                 .collect();
             return (

@@ -611,8 +611,9 @@ fn refusal(code: &str, details: &Value) -> Option<Outcome> {
     let why = match code {
         "gatekeeper_denied" => match details["reason"].as_str() {
             Some("denied_by_rule") => "always denied on this host",
-            Some("not_covered") => "not what the owner asked",
-            _ => "needed the owner's message",
+            Some("exfiltration") => "looked like it sent the owner's data away",
+            Some("unconnected") => "nothing the owner said leads to it",
+            _ => "gatekeeper said no",
         },
         "gatekeeper_unavailable" => "judge unavailable",
         "exec_denied" => "exec is off for this agent",

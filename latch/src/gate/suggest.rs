@@ -7,8 +7,8 @@
 //! "Never …"; one the rule denied, the rule without each of its first three
 //! sentences, the rule and "You may …", then no rule when it is one
 //! sentence. The first that flips the ruling is the suggestion. A request
-//! the owner's message didn't cover can't be let through by a rule, which
-//! only denies: the answer is to ask for it in the message.
+//! another check found a problem with can't be let through by a rule,
+//! which only denies: the answer is to ask for it in the message.
 
 use std::path::Path;
 
@@ -16,7 +16,7 @@ use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
 use super::swarm::SwarmReader;
-use super::{Gatekeeper, YES_P, requests, rules};
+use super::{CLEAR_P, Gatekeeper, requests, rules};
 use crate::failure::{Failure, code};
 
 /// The suggestion for the record `id` on this machine's host, judged with
@@ -70,14 +70,16 @@ pub(super) fn judgment(record: &crate::audit::Record) -> Value {
         .unwrap_or_else(|| record.args["gate"].clone())
 }
 
-/// How a judgment can be turned: `None` for a request the owner's message
-/// didn't cover (ask in it), `Some(None)` for one no rule edit turns, else
-/// `Some(Some(refused))`.
+/// How a judgment can be turned: `None` for a request the exfiltration or
+/// chat check refused (ask in the message), `Some(None)` for one no rule
+/// edit turns, else `Some(Some(refused))`.
 pub(super) fn verdict(gate: &Value) -> Option<Option<bool>> {
-    let uncovered = gate["p"]["covered"].as_f64().is_some_and(|p| p < YES_P);
+    let found = ["exfiltration", "unconnected"]
+        .iter()
+        .any(|check| gate["p"][check].as_f64().is_some_and(|p| p >= CLEAR_P));
     match gate["verdict"].as_str() {
-        Some("not_covered") => None,
-        _ if uncovered => None,
+        Some("exfiltration" | "unconnected") => None,
+        _ if found => None,
         Some("allow") => Some(Some(false)),
         Some("denied_by_rule") => Some(Some(true)),
         _ => Some(None),

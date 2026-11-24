@@ -1,8 +1,9 @@
 # Connect an agent
 
 Every agent needs its own Plow credential. Your hosts recognize the agent by
-it, and judge each of its requests as that agent's: against the message of
-yours it cites, and the host's device rule.
+it, and judge each of its requests as that agent's: for exfiltration,
+against the conversation of yours it cites, and against the host's device
+rule.
 
 > Never copy your own `~/.latch` folder, or its token, to an agent. A host
 > would take the agent's requests for yours.
@@ -128,13 +129,14 @@ it.
 ## What an agent may do
 
 Agents may look things up, open web pages, download files and write Gmail
-drafts without asking. Everything else runs only on a message of yours the
-agent cites with `--intent ROOM/EVENT`, from its own 1:1 room with you (its
-Swarm DM with you, or its iMessage room). The host reads that message and
-your later ones itself: a later “stop” wins, and a one-time ask is spent
-once done. A task you give on a site includes using its saved login there;
-it does not extend to buying, sending or changing things after sign-in. An
-agent quoting you cannot give permission.
+drafts without asking. Everything else is judged, and runs unless it
+clearly sends your data somewhere unrelated to the work, has nothing to do
+with what you've been saying to the agent, or your device rule denies it.
+An agent may cite your message with `--intent ROOM/EVENT`, from its own 1:1
+room with you (its Swarm DM with you, or its iMessage room). The host reads
+that message and your later ones itself: a later “stop” wins. A task you
+give includes its ordinary steps, such as using a site's saved login there.
+An agent quoting you is not you.
 
 The host reads your messages as you: sign it in to Swarm once (after
 signing in to Swarm in a browser), and tell it the agent's Swarm account:
@@ -167,5 +169,5 @@ latch exec --host my-mac -- ls -la
 | 1 | Failed. | Read the error. |
 | 2 | The command is wrong, or it names no host. | Fix the command. |
 | 3 | The host couldn't be reached, or couldn't judge the request. | Retry later. A browser plan may have run some steps: read its `steps`. |
-| 4 | Refused. | Do what the refusal's `next` says. For `not_covered`, ask the owner in your 1:1 room, then cite their answer. Otherwise don't retry. |
+| 4 | Refused. | Do what the refusal's `next` says. For `unconnected` or `exfiltration`, ask the owner in your 1:1 room, then cite their answer. Otherwise don't retry. |
 | 5 | Sent, but no answer came back. | Check what happened before you send it again. |

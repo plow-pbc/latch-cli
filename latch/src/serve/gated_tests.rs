@@ -13,12 +13,12 @@ use crate::failure::Exit;
 use crate::gate::fake::{self, AGENT, FakePlow, World};
 use crate::model;
 
-pub(super) fn always_covered(_: &Value) -> Option<[f64; 3]> {
+pub(super) fn always_connected(_: &Value) -> Option<[f64; 3]> {
     Some([0.9, 0.08, 0.02])
 }
 
 /// The cited intent never covers the action; no device rule forbids it.
-fn never_covered(_: &Value) -> Option<[f64; 3]> {
+fn never_connected(_: &Value) -> Option<[f64; 3]> {
     Some([0.1, 0.85, 0.05])
 }
 
@@ -388,7 +388,7 @@ async fn an_operation_is_audited_before_dashboard_name_lookup() {
 
 #[tokio::test]
 async fn a_refused_operation_runs_nothing_and_returns_nothing() {
-    let t = start(judged_by(never_covered)).await;
+    let t = start(judged_by(never_connected)).await;
     let agent = t.caller("agent").await;
 
     let (answer, rest) = t
@@ -396,7 +396,7 @@ async fn a_refused_operation_runs_nothing_and_returns_nothing() {
         .await;
     let (exit, code, details) = refusal(&answer);
     assert_eq!((exit, code), (Exit::Denied, "gatekeeper_denied"));
-    assert_eq!(details["reason"], "not_covered");
+    assert_eq!(details["reason"], "unconnected");
     assert!(rest.is_empty());
     assert!(!t.area.join("made").exists(), "the program never ran");
 
@@ -422,7 +422,7 @@ async fn a_refused_operation_runs_nothing_and_returns_nothing() {
     for record in &records {
         assert_eq!(record["decision"], "deny");
         assert_eq!(record["outcome"], "gatekeeper_denied");
-        assert_eq!(record["gate"]["verdict"], "not_covered");
+        assert_eq!(record["gate"]["verdict"], "unconnected");
     }
     assert_eq!(records[2]["args"], json!({"command": "gmail.send"}));
 }
@@ -474,25 +474,18 @@ async fn the_answer_does_not_wait_for_the_dashboard_name_lookup() {
 }
 
 #[tokio::test]
-async fn an_agents_op_runs_only_on_a_cited_intent_and_every_call_is_judged() {
-    let t = start(judged_by(always_covered)).await;
+async fn an_agents_op_is_judged_every_call_with_or_without_a_citation() {
+    let t = start(judged_by(always_connected)).await;
     let agent = t.caller("agent").await;
     let tidy = exec("echo tidied >> made");
-    // Citing nothing, it is refused before any judge is asked.
+    // Citing nothing, it is judged without a conversation, and runs.
     let (answer, _) = t.call(&agent, "exec", tidy.clone()).await;
-    let (exit, code, details) = refusal(&answer);
-    assert_eq!((exit, code), (Exit::Denied, "gatekeeper_denied"));
-    assert_eq!(details["reason"], "intent_required");
-    let Response::Error { next, .. } = &answer else {
-        unreachable!()
+    let Response::Ok(result) = answer else {
+        panic!("refused: {answer:?}");
     };
-    let next = next.as_deref().unwrap();
-    assert!(
-        next.contains("update latch") && next.contains("--intent"),
-        "{next}"
-    );
-    assert!(!t.area.join("made").exists());
-    assert_eq!(t.judged(), 0);
+    assert_eq!(result["exit_code"], 0);
+    assert_eq!(t.judged(), 1);
+    assert!(t.judgments()[0].get("cited_message").is_none());
 
     // Citing the owner's message, it runs, judged each time.
     for _ in 0..2 {
@@ -504,10 +497,10 @@ async fn an_agents_op_runs_only_on_a_cited_intent_and_every_call_is_judged() {
     }
     assert_eq!(
         std::fs::read_to_string(t.area.join("made")).unwrap(),
-        "tidied\ntidied\n"
+        "tidied\ntidied\ntidied\n"
     );
-    assert_eq!(t.judged(), 2, "the same exec is judged each time");
-    assert_eq!(t.judgments()[0]["cited_message"]["text"], ASKED);
+    assert_eq!(t.judged(), 3, "the same exec is judged each time");
+    assert_eq!(t.judgments()[1]["cited_message"]["text"], ASKED);
 
     // Each allowed op's gate record is written before its own, which names it.
     let all: Vec<crate::audit::Record> = crate::audit::read_all(&t.state.join(crate::audit::FILE))
@@ -516,9 +509,9 @@ async fn an_agents_op_runs_only_on_a_cited_intent_and_every_call_is_judged() {
         .filter(|record| record.op != "connect")
         .collect();
     let ops: Vec<&str> = all.iter().map(|r| r.op.as_str()).collect();
-    assert_eq!(ops, ["exec", "gate", "exec", "gate", "exec"]);
-    assert_eq!(all[0].gate.as_ref().unwrap()["verdict"], "intent_required");
-    for pair in all[1..].chunks(2) {
+    assert_eq!(ops, ["gate", "exec", "gate", "exec", "gate", "exec"]);
+    assert_eq!(all[1].gate.as_ref().unwrap()["chat"], "none");
+    for pair in all.chunks(2) {
         let (gate, op) = (&pair[0], &pair[1]);
         assert_eq!(op.gate.as_ref().unwrap()["gate_record"], gate.hash);
         assert_eq!(gate.gate.as_ref().unwrap()["verdict"], "allow");
@@ -528,9 +521,10 @@ async fn an_agents_op_runs_only_on_a_cited_intent_and_every_call_is_judged() {
         .iter()
         .map(|record| serde_json::to_value(record).unwrap())
         .collect();
-    let gate = &all[4]["gate"];
+    let gate = &all[5]["gate"];
     assert_eq!(gate["verdict"], "allow");
-    assert_eq!(gate["class"], "intent");
+    assert_eq!(gate["class"], "judged");
+    assert_eq!(gate["chat"], "read");
     assert_eq!(gate["intent"], format!("swarm:{}", fake::CITED));
     assert_eq!(gate["model"], gate::MODEL);
     assert_eq!(gate["model_request"], "req_fake");
@@ -538,10 +532,10 @@ async fn an_agents_op_runs_only_on_a_cited_intent_and_every_call_is_judged() {
         (gate["cost"].as_f64().unwrap() - 0.0001).abs() < 1e-12,
         "{gate}"
     );
-    assert!(gate["p"]["covered"].as_f64().unwrap() >= 0.5);
+    assert!(gate["p"]["unconnected"].as_f64().unwrap() < gate::CLEAR_P);
     assert!(gate["latency_ms"].is_u64(), "{gate}");
     // Both caller checks are timed: on connect, and before the operation.
-    assert!(all[4]["timings"]["caller_check_ms"].is_u64());
+    assert!(all[5]["timings"]["caller_check_ms"].is_u64());
     let connects: Vec<Value> = t
         .audit_text()
         .lines()
@@ -552,7 +546,7 @@ async fn an_agents_op_runs_only_on_a_cited_intent_and_every_call_is_judged() {
     for connect in &connects {
         assert!(connect["timings"]["caller_check_ms"].is_u64(), "{connect}");
     }
-    assert_eq!(all[4]["args"]["argv"][2], "echo tidied >> made");
+    assert_eq!(all[5]["args"]["argv"][2], "echo tidied >> made");
     assert!(
         !t.audit_text().contains(ASKED),
         "the owner's words in the audit"
@@ -563,12 +557,12 @@ fn replace_the_judged_write_folder(state: &Value) -> Option<[f64; 3]> {
     let path = Path::new(state["proposed_action"]["writes"][0].as_str().unwrap());
     // Swapped at the judgment, so the folder judged is not the one written.
     if path.is_symlink() {
-        return always_covered(state);
+        return always_connected(state);
     }
     std::fs::rename(path, path.with_file_name("approved-before-swap")).unwrap();
     let home = path.parent().unwrap().parent().unwrap();
     std::os::unix::fs::symlink(home.join("outside-write"), path).unwrap();
-    always_covered(state)
+    always_connected(state)
 }
 
 #[tokio::test]
@@ -592,7 +586,7 @@ async fn a_write_path_retargeted_after_judgment_is_refused() {
 
 #[tokio::test]
 async fn unusual_and_missing_caches_do_not_fail_exec_or_grant_aliases() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     let home = &t.host.workers.home;
     std::fs::write(home.join(".cache"), "plain file").unwrap();
     let target = home.join("outside-write");
@@ -619,8 +613,8 @@ async fn unusual_and_missing_caches_do_not_fail_exec_or_grant_aliases() {
 }
 
 #[tokio::test]
-async fn a_repeated_google_change_is_judged_again_with_what_was_done_and_a_read_never() {
-    let t = start(judged_by(always_covered)).await;
+async fn a_repeated_google_change_is_judged_again_and_a_read_never() {
+    let t = start(judged_by(always_connected)).await;
     let agent = t.caller("agent").await;
     let google = |gog_args: &[&str]| json!({"gog_args": gog_args, "account": [], "confirm_conflict": false, "inputs": []});
     let send = google(&[
@@ -642,9 +636,8 @@ async fn a_repeated_google_change_is_judged_again_with_what_was_done_and_a_read_
         "the second send is judged as the first"
     );
     assert_eq!(asked[1]["proposed_action"]["command"], send["gog_args"]);
-    // The second is judged knowing the first was done on the same intent.
-    assert_eq!(asked[0]["already_done"], json!([]));
-    assert_eq!(asked[1]["already_done"].as_array().unwrap().len(), 1);
+    // What was done before on the intent is never put to the judge.
+    assert!(asked[1].get("already_done").is_none(), "{}", asked[1]);
     // A read with a flag the grammar lacks runs nothing, so it is refused as
     // it is, never judged as a change needing the owner's word.
     let (answer, _) = t
@@ -656,7 +649,7 @@ async fn a_repeated_google_change_is_judged_again_with_what_was_done_and_a_read_
 
 #[tokio::test]
 async fn a_put_is_judged_at_its_resolved_path_and_a_short_one_changes_nothing() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     let agent = t.caller("agent").await;
     let notes = t.area.join("notes.txt");
     // A folder destination takes the file's name, and the judge is shown
@@ -683,7 +676,7 @@ async fn a_put_is_judged_at_its_resolved_path_and_a_short_one_changes_nothing() 
 
 #[tokio::test]
 async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     let agent = t.caller("agent").await;
     // A dotfile outside any shared folder: readable, and a read is not judged.
     let home = &t.host.workers.home;
@@ -718,7 +711,7 @@ async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
 #[tokio::test]
 async fn an_exec_the_host_denies_is_refused_without_asking_the_judge() {
     let every_agent = DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]);
-    let t = start_denying(judged_by(always_covered), every_agent).await;
+    let t = start_denying(judged_by(always_connected), every_agent).await;
     let agent = t.caller("agent").await;
     let (answer, _) = t.cite(&agent, "exec", exec("touch made")).await;
     let (exit, code, _) = refusal(&answer);
@@ -739,7 +732,7 @@ fn exec_stdin(stdin: &[u8]) -> Value {
 
 #[tokio::test]
 async fn exec_paths_are_validated_before_judgment_and_created_only_after_allow() {
-    let t = start(judged_by(never_covered)).await;
+    let t = start(judged_by(never_connected)).await;
     let agent = t.caller("agent").await;
     for path in ["~", "~/..", "/", "~/.latch/new", t.state.to_str().unwrap()] {
         let args = json!({"argv": ["true"], "writes": [path]});
@@ -755,7 +748,7 @@ async fn exec_paths_are_validated_before_judgment_and_created_only_after_allow()
     let (refused, _) = t.cite(&agent, "exec", args.clone()).await;
     assert_eq!(refusal(&refused).1, "gatekeeper_denied");
     assert!(!path.exists());
-    t.plow.world.lock().unwrap().decide = Some(always_covered);
+    t.plow.world.lock().unwrap().decide = Some(always_connected);
     let (answer, _) = t.cite(&agent, "exec", args).await;
     let Response::Ok(result) = answer else {
         panic!("{answer:?}")
@@ -780,7 +773,7 @@ async fn exec_paths_are_validated_before_judgment_and_created_only_after_allow()
 
 #[tokio::test]
 async fn exec_reads_home_but_writes_only_declarations_and_caches() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     let home = &t.host.workers.home;
     std::fs::create_dir(home.join(".ssh")).unwrap();
     std::fs::write(home.join(".ssh/config"), "readable-dotfile").unwrap();
@@ -873,7 +866,7 @@ fn kept(t: &TestHost, text: &str) -> bool {
 
 #[tokio::test]
 async fn a_program_cannot_turn_its_stderr_into_a_worker_error_or_audit_content() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     let marker = "program-output-must-not-be-audit-content";
     std::fs::write(t.area.join("output-marker"), marker).unwrap();
     let agent = t.caller("agent").await;
@@ -889,7 +882,7 @@ async fn a_program_cannot_turn_its_stderr_into_a_worker_error_or_audit_content()
 
 #[tokio::test]
 async fn secret_env_reaches_only_the_program_and_preserves_argv_and_stdin() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     let agent = t.caller("agent").await;
     let marker = "private-env-marker-71e9";
     let secret = format!("{marker} quotes\" ' =\n$(touch injected) `touch injected2`");
@@ -947,7 +940,7 @@ async fn secret_env_reaches_only_the_program_and_preserves_argv_and_stdin() {
 
 #[tokio::test]
 async fn secret_names_that_control_execution_are_allowed_and_explained_to_the_judge() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     let agent = t.caller("agent").await;
     let marker = "hidden-execution-value-742e";
     let names = [
@@ -1004,7 +997,7 @@ async fn secret_names_that_control_execution_are_allowed_and_explained_to_the_ju
 
 #[tokio::test]
 async fn invalid_or_reserved_secret_names_never_reach_the_judge() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     let agent = t.caller("agent").await;
     let marker = "invalid-env-private-marker-993f";
     for name in [
@@ -1030,7 +1023,7 @@ async fn invalid_or_reserved_secret_names_never_reach_the_judge() {
 
 #[tokio::test]
 async fn an_agents_exec_stdin_is_judged_with_its_argv_and_never_kept() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     let agent = t.caller("agent").await;
     let script = "touch made # stdin-judged-7f3a";
     let (answer, _) = t.cite(&agent, "exec", exec_stdin(script.as_bytes())).await;
@@ -1045,7 +1038,7 @@ async fn an_agents_exec_stdin_is_judged_with_its_argv_and_never_kept() {
 
 #[tokio::test]
 async fn an_agents_stdin_the_judge_cannot_read_runs_nothing() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     let agent = t.caller("agent").await;
     let mut too_long = b"touch made\n".to_vec();
     too_long.resize(crate::gate::JUDGED_STDIN + 1, b'#');
@@ -1071,7 +1064,7 @@ async fn an_agents_stdin_the_judge_cannot_read_runs_nothing() {
 #[tokio::test]
 async fn an_exec_the_host_denies_keeps_no_trace_of_its_stdin() {
     let every_agent = DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]);
-    let t = start_denying(judged_by(always_covered), every_agent).await;
+    let t = start_denying(judged_by(always_connected), every_agent).await;
     let agent = t.caller("agent").await;
     let secret = b"echo denied-stdin-91c2";
     let (answer, _) = t.cite(&agent, "exec", exec_stdin(secret)).await;
@@ -1088,7 +1081,7 @@ async fn an_exec_the_host_denies_keeps_no_trace_of_its_stdin() {
 
 #[tokio::test]
 async fn owners_cannot_cite_an_intent() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     let device = t.caller("device").await;
     for local in [false, true] {
         let request = Request {
@@ -1110,7 +1103,7 @@ async fn owners_cannot_cite_an_intent() {
 
 #[tokio::test]
 async fn the_owners_own_devices_are_judged_as_the_owner_against_the_device_rule() {
-    let t = start(judged_by(never_covered)).await;
+    let t = start(judged_by(never_connected)).await;
     let device = t.caller("device").await;
     let google = json!({"gog_args": ["gmail", "send", "--to", "a@example.com", "--body", "hi"],
                         "account": [], "confirm_conflict": false, "inputs": []});
@@ -1162,10 +1155,10 @@ async fn the_owners_own_devices_are_judged_as_the_owner_against_the_device_rule(
     // the same rule.
     let agent = t.caller("agent").await;
     let (answer, _) = t.cite(&agent, "exec", exec("touch other")).await;
-    assert_eq!(refusal(&answer).2["reason"], "not_covered");
+    assert_eq!(refusal(&answer).2["reason"], "unconnected");
     let record = t.audit().pop().unwrap();
     assert_eq!(record["gate"]["caller"], "agent");
-    assert_eq!(record["gate"]["verdict"], "not_covered");
+    assert_eq!(record["gate"]["verdict"], "unconnected");
     assert_eq!(record["agent"], AGENT);
     let agents = t.judgments().pop().unwrap();
     assert_eq!(agents["device_rule"], "Never send email.");
@@ -1222,7 +1215,7 @@ async fn an_outage_refuses_judged_operations_for_everyone_but_not_reads_or_the_o
 async fn an_agents_vault_list_is_unjudged_and_shows_ids_titles_and_sites_only() {
     use crate::vault::item::{CARD, Item, LOGIN, Raw};
     use crate::vault::store::Backend;
-    let t = start(judged_by(never_covered)).await;
+    let t = start(judged_by(never_connected)).await;
     let device = t.caller("device").await;
     let agent = t.caller("agent").await;
     let login = [
@@ -1315,7 +1308,7 @@ async fn an_agents_vault_list_is_unjudged_and_shows_ids_titles_and_sites_only() 
 
 #[tokio::test]
 async fn an_agent_plow_gives_no_uid_runs_nothing() {
-    let t = start(judged_by(never_covered)).await;
+    let t = start(judged_by(never_connected)).await;
     let agent = t.caller("agent").await;
     let key = agent.id().to_string();
     t.plow.world.lock().unwrap().callers.get_mut(&key).unwrap()["agent_uid"] = Value::Null;
@@ -1333,7 +1326,7 @@ async fn an_agent_plow_gives_no_uid_runs_nothing() {
 /// agent's next judgment reads what the owner set.
 #[tokio::test]
 async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_agent() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     let device = t.caller("device").await;
     let agent = t.caller("agent").await;
     let ok = |answer: Response| match answer {
@@ -1457,7 +1450,7 @@ async fn phone_call(host: &TestHost, op: &str, args: Value) -> Response {
 
 #[tokio::test]
 async fn a_host_whose_binary_was_replaced_runs_nothing_for_callers_or_phone_links() {
-    let host = start(judged_by(never_covered)).await;
+    let host = start(judged_by(never_connected)).await;
     let device = host.caller("device").await;
     let link = json!({"code": "not-a-real-code", "values": {"password": "made-up-pass-4417"}});
     let before = phone_call(&host, "submit", link.clone()).await;
@@ -1491,7 +1484,7 @@ async fn a_host_whose_binary_was_replaced_runs_nothing_for_callers_or_phone_link
 #[tokio::test]
 async fn a_host_whose_binary_was_replaced_says_which_build_is_there_on_its_dashboard() {
     use std::os::unix::fs::PermissionsExt;
-    let host = start(judged_by(never_covered)).await;
+    let host = start(judged_by(never_connected)).await;
     let mut board = host.host.dashboard.watch();
     watch_binary(&host.host, Duration::from_millis(50));
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1617,7 +1610,7 @@ impl TestHost {
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn messages_and_contacts_reads_are_unjudged_and_audited_without_a_row() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     t.with_messages();
     let agent = t.caller("agent").await;
 
@@ -1739,7 +1732,7 @@ async fn messages_and_contacts_reads_are_unjudged_and_audited_without_a_row() {
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn an_exec_cannot_read_the_messages_or_address_book_its_host_reads() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     t.with_messages();
     let agent = t.caller("agent").await;
     let [messages, book] = crate::messages::host::folders(&t.home);
@@ -1794,7 +1787,7 @@ fn forged_cursor() -> String {
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn a_later_page_runs_on_the_filters_its_cursor_carries() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     t.with_messages();
     let agent = t.caller("agent").await;
     let first = json!({"action": "search", "args": ["--from", "(555) 000-0001", "--limit", "1"]});
@@ -1862,7 +1855,7 @@ async fn messages_and_contacts_run_unjudged_for_the_owner_and_agents_even_in_an_
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn a_contacts_worker_cannot_read_messages() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     t.with_messages();
     let [messages, book] = crate::messages::host::folders(&t.home);
     let argv: Vec<String> = vec![
@@ -1897,7 +1890,7 @@ async fn a_contacts_worker_cannot_read_messages() {
 async fn local_vault_edits_reach_a_running_hosts_release_path() {
     use crate::vault::store::Backend;
     use tokio::io::AsyncWriteExt;
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     let state = crate::state::StateDir {
         path: t.state.clone(),
     };
@@ -1959,7 +1952,7 @@ async fn local_vault_edits_reach_a_running_hosts_release_path() {
 
 #[tokio::test]
 async fn an_exec_is_audited_whole_and_shown_with_its_credentials_hidden() {
-    let t = start(judged_by(always_covered)).await;
+    let t = start(judged_by(always_connected)).await;
     let agent = t.caller("agent").await;
     let secret = "synthetic-exec-credential-7f3a";
     // Longer than the 4 KiB the audit once kept: it is kept whole now.

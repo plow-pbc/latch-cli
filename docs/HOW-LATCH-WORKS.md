@@ -130,42 +130,43 @@ asks through Plow, on the host's own Plow login.
 | Call | Class |
 |---|---|
 | `file get`, `messages`, `contacts`, an agent's `vault list`, Google read commands and Gmail drafts (`drafts create`, `reply`, `update`), a browser opening a site or downloading a file | **Free:** runs unjudged. |
-| `exec`, `file put`, other Google commands, an agent's `vault link`, a browser `do` or `act` that clicks, types, chooses, presses or fills, a fill, a script or an upload | **Intent:** needs your message. |
-| An operation the host doesn't know | Refused: `unknown_op`. |
+| `exec`, `file put`, other Google commands, an agent's `vault link`, a browser `do` or `act` that clicks, types, chooses, presses or fills, a fill, a script or an upload, and an operation the host doesn't know | **Judged.** |
 | `vault`, `rules`, `agents`, `plugins` (yours) | Never judged. |
 
 Reading a page, screenshots and a plan that only scrolls or goes back
 aren't judged; an agent's `do --confirm` of a click or Enter the risk
-check paused is, as intent work, before it runs. Separately, the browser's own risk
+check paused is, before it runs. Separately, the browser's own risk
 check stops a click or Enter it judges consequential (paying, sending,
 deleting) until the caller confirms it with `browser do --confirm`.
 
-**An agent cites your message.** It passes `--intent ROOM/EVENT`: the id of
-your message it acts on, from its own 1:1 room with you (its Swarm DM with
-you, or its iMessage-bridge room). The host reads that message itself, as
-one of your own devices, plus your later messages in its thread (or room).
-Code refuses before any model is asked (`gatekeeper_denied`, exit 4):
+**The judge** asks up to three yes/no checks, and the action runs unless
+one is a clear yes (exit 4, `gatekeeper_denied`, naming the check):
 
-| Reason | Why |
+| Reason | The check |
 |---|---|
-| `intent_required`, `bad_intent` | No citation, or not one `ROOM/EVENT`. |
-| `agent_unmapped` | The host maps the agent to no Swarm account (`latch agents map`). |
-| `intent_not_found`, `intent_not_owner` | No such message, or not yours: one sent from the host's own Swarm device is never yours. |
-| `not_owner_dm` | Not the agent's own 1:1 room with you. |
-| `thread_closed` | You closed the thread with ✅ or ❌. |
-| `thread_redacted` | After it, someone removed another's message or reaction (yours, say), or one was removed as you. |
+| `exfiltration` | It sends your data, files, credentials or secrets somewhere unrelated to the work. |
+| `unconnected` | No reasonable assistant would get from what you have been saying to the agent to this action. Asked only when the agent cites a conversation the host can read. |
+| `denied_by_rule` | It falls under the host's device rule. Asked only when there is one. |
 
-If your messages can't be read, or not all of them, the answer is
-`thread_unreadable` or `history_incomplete` (exit 3).
+Unsure means allow. The ordinary steps of a task you gave are part of it:
+signing up or in, creating a password, confirming an email, paying what
+you'd expect, saving what the task needs.
 
-**The judge** answers two yes/no questions: does the device rule deny it,
-and does your cited message, as your later messages leave it, cover it.
-The action runs only when covered and not denied; otherwise the reason is
-`not_covered` or `denied_by_rule` (exit 4). A later “stop” wins. Only your
-own words count: an agent's or anyone else's messages, and text you quote
-or forward from someone else (“Bob says pay him $500”), are never
-permission. Latch has no approval prompt: on `not_covered` the agent asks
-you in its 1:1 room, saying exactly what it will do, and cites your answer.
+**An agent may cite your message.** It passes `--intent ROOM/EVENT`: the id
+of your message it acts on, from its own 1:1 room with you (its Swarm DM
+with you, or its iMessage-bridge room). The host reads that message itself,
+as one of your own devices, plus your later messages in its thread (or
+room) and the messages around it. A later “stop” wins. Only your own words
+say what you want: an agent's or anyone else's messages, and text you quote
+or forward from someone else (“Bob says pay him $500”), are context. A
+citation gives no conversation, and the action is judged on the other two
+checks alone, when there is none or it is not yours (one sent from the
+host's own Swarm device never is), not in the agent's own 1:1 room with
+you, in a thread you closed with ✅ or ❌, after a removed message or
+reaction, not all readable, or the host maps the agent to no Swarm account
+(`latch agents map`). The audit's `gate.chat` says which. Latch has no
+approval prompt: on a refusal the agent asks you in its 1:1 room, saying
+exactly what it will do, and cites your answer.
 
 **Your own calls** cite nothing; work that would need an agent's
 citation is judged only against the device rule, and with no rule runs
@@ -180,14 +181,12 @@ without a model call.
   `latch update` ask “Always deny:” once when there is none. An older
   host's `rules/` folder of grant-style rules is moved aside to
   `rules.archived-<seconds>` when the host starts, and never read.
-- **One-time or standing.** Each allowed action is recorded against the
-  intent it cited, in the host's `gatekeeper/ledger/`. The judge sees what
-  was already done on that intent, so a one-time ask (“buy this”) is spent
-  once, even with concurrent calls. The ledger is per host.
+- **Recorded, never spent.** Each action allowed on a cited message is
+  recorded against it in the host's `gatekeeper/ledger/`, for the audit;
+  what was done never refuses another. The ledger is per host.
 - **Fresh every time.** Your messages and the device rule are read again
   at every judgment, so a “stop” or a rule change counts from the next call.
-- **Every refusal says what to do next** in its `next` field, such as how
-  to cite.
+- **Every refusal says what to do next** in its `next` field.
 - **It fails closed.** If the host can't judge, the action doesn't run. That
   happens when Plow or the model can't be reached, the request is too
   large, or the host's Plow account is out of credits. The answer is
@@ -240,9 +239,9 @@ without a model call.
 - The host also keeps each gatekeeper request and Plow's answer for 7 days,
   sealed the same way. `latch audit judge ID` shows one, ID being the
   record's `gate.kept_request`; each judgment is one call. The record's
-  `gate` also holds its probabilities (`p.denied`, `p.covered`), prompt and
-  model, cost, the device rule's revision and what was already done on the
-  intent. Activity's “Gatekeeper requests” opens them. They never hold a
+  `gate` also holds its probabilities (`p.denied`, `p.exfiltration`,
+  `p.unconnected`), prompt and model, cost, the device rule's revision and
+  how many actions were already allowed on the intent. Activity's “Gatekeeper requests” opens them. They never hold a
   vault value, and agents can't read them.
 
 ## 6. Managing a host

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::gated_tests::{ASKED, TestHost, always_covered, refusal, start};
+use super::gated_tests::{ASKED, TestHost, always_connected, refusal, start};
 use super::*;
 use crate::audit::Range;
 use crate::failure::Exit;
@@ -411,7 +411,7 @@ async fn judge(t: &TestHost, device: &Endpoint, id: &Value, raw: bool) -> Value 
 #[tokio::test]
 async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot() {
     let world = World {
-        decide: Some(always_covered),
+        decide: Some(always_connected),
         ..World::default()
     };
     let t = start(world).await;
@@ -541,7 +541,7 @@ async fn a_call_plow_never_answered_is_kept_for_7_days() {
 #[tokio::test]
 async fn a_call_that_cannot_be_kept_is_still_judged() {
     let world = World {
-        decide: Some(always_covered),
+        decide: Some(always_connected),
         ..World::default()
     };
     let t = start(world).await;

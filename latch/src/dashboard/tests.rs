@@ -117,8 +117,8 @@ fn busy() -> Dashboard {
         },
         None,
     );
-    let gate = json!({"caller": "agent", "class": "intent", "verdict": "not_covered",
-        "p": {"covered": 0.21, "denied": 0.03}, "model": "jev-1.14",
+    let gate = json!({"caller": "agent", "class": "judged", "verdict": "unconnected",
+        "p": {"exfiltration": 0.02, "unconnected": 0.91, "denied": 0.03}, "model": "jev-1.14",
         "device_rule": "aaaaaaaaaaaaaaaa", "intent": "swarm:!dm:plow.co/$ask", "already_done": 2});
     run(
         &dashboard,
@@ -128,8 +128,8 @@ fn busy() -> Dashboard {
         json!({"path": "report.pdf"}),
         denied(
             "gatekeeper_denied",
-            "The owner's messages don't cover this. Ask the owner in chat, saying exactly what you will do, then retry.",
-            json!({"reason": "not_covered"}),
+            "The gatekeeper's chat check refused this: nothing the owner has said to you leads to this action.",
+            json!({"reason": "unconnected"}),
         ),
         Some(gate),
     );
@@ -195,7 +195,7 @@ fn a_browser_session_groups_its_calls_and_a_plan_its_steps() {
     assert_eq!(upload.title, "Write: report.pdf");
     assert_eq!(
         upload.outcome().line(),
-        "Refused - not what the owner asked"
+        "Refused - nothing the owner said leads to it"
     );
     let detail = &upload.calls[0].detail;
     assert!(detail.audit_id.as_deref().unwrap().starts_with("27ff057f"));
@@ -238,8 +238,8 @@ fn results_say_what_happened_in_words() {
     run(&dashboard, agent(), "exec", exec(0), exec(0), no, None);
     let differs = denied(
         "gatekeeper_denied",
-        "The owner's cited message does not ask for this action as it is now.",
-        json!({"reason": "not_covered"}),
+        "The gatekeeper's chat check refused this: nothing the owner has said to you leads to this action.",
+        json!({"reason": "unconnected"}),
     );
     run(&dashboard, agent(), "exec", exec(0), exec(0), differs, None);
     let search = json!({"action": "search", "args": ["--", "code"]});
@@ -265,7 +265,7 @@ fn results_say_what_happened_in_words() {
             "Run: false: Failed - exit 1",
             "Run: false: Refused - judge unavailable",
             "Run: false: Refused - always denied on this host",
-            "Run: false: Refused - not what the owner asked",
+            "Run: false: Refused - nothing the owner said leads to it",
             "Search Messages: Done - 4 matches",
         ]
     );
@@ -393,7 +393,10 @@ fn each_column_is_its_own_at_120_and_the_caller_goes_under_the_command_at_80() {
             .iter()
             .map(|line| line.get(result..).unwrap_or_default().trim())
             .collect();
-        assert_eq!(words.join(" ").trim(), "refused · not what the owner asked");
+        assert_eq!(
+            words.join(" ").trim(),
+            "refused · nothing the owner said leads to it"
+        );
         assert!(!lines.iter().any(|line| line.contains('…')));
         let footer = lines[lines.len() - 2..].join("\n");
         assert!(
@@ -446,16 +449,16 @@ fn the_decision_tab_shows_the_judgment_as_recorded_and_no_more() {
     );
     assert!(steps.contains("[Steps]"));
     assert!(
-        steps.contains("REFUSED - not what the owner asked. This action did not run."),
+        steps.contains("REFUSED - nothing the owner said leads to it. This action did not run."),
         "{steps}"
     );
-    assert!(steps.contains("The owner's messages don't cover this."));
+    assert!(steps.contains("chat check refused this"), "{steps}");
     view.key(Key::Tab);
     let decision = screen(&view, 80, 40).join("\n");
     assert!(decision.contains("[Decision]"));
     assert!(
         decision.contains(
-            "Judge P: covered by the cited message 0.21 | denied by the device rule 0.03"
+            "Judge P: exfiltration 0.02 | unconnected 0.91 | denied by the device rule 0.03"
         ),
         "{decision}"
     );
@@ -986,7 +989,7 @@ fn a_fill_refused_part_way_through_a_plan_says_what_ran_first() {
     assert_eq!(call.outcome.line(), "Stopped - step 3; 2 ran");
     assert_eq!(
         call.steps[2].outcome.as_ref().map(Outcome::line).as_deref(),
-        Some("Refused - needed the owner's message")
+        Some("Refused - gatekeeper said no")
     );
     // So it reads after a restart too, from its audit record alone.
     let mut record = crate::audit::record(
@@ -1265,7 +1268,7 @@ fn a_board_starts_with_the_calls_the_audit_log_holds() {
     assert_eq!(at("browser     close"), at("open https://example.com/") + 1);
     let refused = &lines[at("cargo test")];
     assert!(
-        refused.contains("agent agent-ke") && refused.contains("refused · needed the owner"),
+        refused.contains("agent agent-ke") && refused.contains("refused · gatekeeper said no"),
         "{refused}"
     );
 }

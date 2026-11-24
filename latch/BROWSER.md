@@ -374,9 +374,10 @@ and command.
 ## The gatekeeper
 
 Every caller's browser commands pass the host's gatekeeper. An agent's
-are judged like its other calls: on the owner's message it cites with
-`--intent ROOM/EVENT`, as the owner's later messages leave it, and the
-host's device rule. The owner's own devices cite nothing and are allowed
+are judged like its other calls: they run unless the judge clearly finds
+exfiltration, an action unconnected to the conversation the agent cites
+with `--intent ROOM/EVENT` (when it gives one), or one the host's device
+rule denies. The owner's own devices cite nothing and are allowed
 unless the device rule denies it. Opening a site (`open URL`, or `goto
 URL` or `tab new URL` on another site) and downloads run unjudged. Judged,
 each before anything of it reaches the page:
@@ -385,17 +386,14 @@ each before anything of it reaches the page:
   step's values, the page it starts on (URL and title), the sites it
   names and the vault items it may fill (kind, title and saved sites).
   Every click, typing, choice, keypress and fill is judged, one step on
-  its own too; only a plan that just scrolls or goes back is not. The
-  judge sees what was already allowed on the same cited message, so the
-  steps of one task go through as that task;
+  its own too; only a plan that just scrolls or goes back is not;
 - every vault fill: a `fill`, each fill a plan makes (a literal fill step
   or one a goal chose), and every `do --confirm` that releases an
   identity: the item's kind and title, the sites it is saved for, the
   fields and the page's site, never a value. The judge is told that the
   agent never receives the values and that a login fills only on its own
-  sites. A sign-in still needs the owner's message, where asking for
-  something to be done on a site covers signing in there; a login fill on
-  any other site is refused by code (`login_site_mismatch`). A refused
+  sites, and that signing in is a step of any task on that site; a login
+  fill on any other site is refused by code (`login_site_mismatch`). A refused
   fill in a plan stops the plan at that step, the reason in its `stop`.
   One exception: a card fill that was allowed and filled opens its
   checkout for 10 minutes, and the judge is told so when it judges the
@@ -404,9 +402,10 @@ each before anything of it reaches the page:
   fields fill with no judgment of their own; the audit's gate record is
   `{"verdict": "allow", "checkout": CARD}`. Any other field is judged, and
   a covered fill into another frame is refused and closes the checkout;
-- every `eval`, judged on its whole script: a script that reads form
-  fields, listens to input, keyboard or form events, or sends page data
-  off the page needs the owner's explicit OK;
+- every `eval`, judged on its whole script: a script that reads password
+  or card fields, listens to input, keyboard or form events, or sends page
+  data anywhere but the site itself is exfiltration unless the owner asked
+  for exactly that;
 - every upload (the file's name and size);
 - an agent's `--confirm` of a click or Enter the risk decision paused,
   before it is carried out: what it does, the lines around it and the
@@ -419,9 +418,9 @@ Scrolling, going back, page reads and screenshots are not judged:
 the risk decision, confirmations and the
 fill and pause checks above still hold. A refusal is exit 4,
 `gatekeeper_denied`, and nothing was sent; its `next` says the one thing
-to do. With reason `not_covered`, ask the owner in your 1:1 room, saying
-exactly what you will do, and cite their answer; with `denied_by_rule`,
-don't. A gatekeeper that can't judge (the owner's messages or the model
+to do. With reason `unconnected` or `exfiltration`, ask the owner in your
+1:1 room, saying exactly what you will do, and cite their answer; with
+`denied_by_rule`, don't. A gatekeeper that can't judge (the owner's messages or the model
 unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs; its
 message says what fixes it (below, under the decision model). Owner calls
 and local modes (`setup`, `handoff done`, `do --dry-run`) refuse

@@ -1,9 +1,9 @@
-//! Every action the gatekeeper allowed on one cited intent, so the judge
-//! sees what was already done for it: a one-time "buy this" is spent once.
+//! Every action the gatekeeper allowed on one cited intent, for the audit:
+//! what was done never refuses another.
 //!
 //! A host judges one intent's actions one at a time: [`Ledger::hold`]
 //! takes the intent's lock, and the judgment reads and records under it,
-//! so two concurrent calls on a one-time intent can't both be allowed.
+//! so concurrent calls on one intent are recorded in turn.
 //! Only one host runs on a state folder, so an in-process lock is the
 //! host's lock. Another host gating the same agent keeps its own ledger.
 //!

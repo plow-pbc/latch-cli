@@ -42,11 +42,13 @@ hosts (Macs and Linux VMs), agents run by Plow. Pre-PMF.
 - **Identity comes from the credential, never from a name.** A caller is its
   ed25519 key; the host asks Plow (`GET /v1/latch/peers/{key}`) who that key
   is on every operation. Names are labels.
-- **The gatekeeper is the gate.** No per-agent permission lists. Intent comes
-  from the owner's own message the agent cites from its 1:1 room with the
-  owner, read by the host itself, bounded by the host's deny-only device
-  rule; never from what the agent says. It fails closed: a host that cannot judge
-  dispatches nothing.
+- **The gatekeeper is the gate, and it allows by default.** The agents are
+  trusted: no per-agent permission lists, and no citation required. The
+  judge refuses only a clear finding of exfiltration, an action unconnected
+  to the owner's conversation the agent cites from its 1:1 room (read by
+  the host itself, never from what the agent says), or one the host's
+  deny-only device rule denies; unsure means allow. It fails closed: a
+  host that cannot judge dispatches nothing.
 - **State lives in one folder** (`--state-dir`, default `~/.latch`), mode
   0600 files, versioned by `latch.json`'s format. A latch reads only its own
   format; there is no migration code, by design.
@@ -66,9 +68,9 @@ a review slot. Flag a diff that *widens* one, not the limit itself:
   allowed unless the host's device rule denies it, instead of being judged as
   the agent's call. The docs tell agents to use their own credential; the
   host cannot tell.
-- **The gatekeeper remembers what ran only per cited intent, per host.** Its
-  ledger spends a one-time ask once on that host; another host gating the
-  same agent keeps its own. Other repeats are left to request ids
+- **The gatekeeper does not stop repeats.** Its ledger records what ran per
+  cited intent, per host, for the audit; another host gating the same
+  agent keeps its own. Repeats are left to request ids
   (`duplicate_request`), exit 5's "outcome unknown" and the agent's
   guidance to check before resending.
 - **The state folder is protected only from latch's own workers.** Root, and

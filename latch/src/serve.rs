@@ -2204,10 +2204,10 @@ mod tests {
         assert_eq!(result["path"], "/tmp/a");
 
         let mut refusal = Failure::new(code::gatekeeper_denied, "no".to_string());
-        refusal.details = serde_json::json!({"reason": "not_covered"});
+        refusal.details = serde_json::json!({"reason": "unconnected"});
         let without_details = failed(code::not_found, "y".to_string());
         for (response, reason) in [
-            (Response::error(&refusal), "not_covered"),
+            (Response::error(&refusal), "unconnected"),
             (without_details, ""),
         ] {
             let failure = with_audit_id(response, "abc".to_string())

@@ -25,14 +25,16 @@ model up.
   host asks Plow who a key is when the caller connects, and again before
   every operation. A name is only a label. If Plow says no, or can't be
   reached, the call is refused.
-- **Work that acts is judged first.** Reads run unjudged; an unknown
-  operation is refused. Programs, file copies in, Google writes and the
-  browser's risky steps go to the host's gatekeeper before they run. An
-  agent must cite the owner's message it acts on, from its own 1:1 room
-  with the owner; the host reads that message and the owner's later ones
-  itself, and code refuses a missing or foreign citation before any model.
-  The judge, a model, asks whether the message covers the action and
-  whether the host's deny-only device rule denies it.
+- **Work that acts is judged first.** Reads run unjudged. Programs, file
+  copies in, Google writes, the browser's risky steps and any operation
+  the host doesn't know go to the host's gatekeeper before they run. The
+  agents are trusted, so the judge, a model, catches mistakes and obvious
+  attacks rather than approving each step: an action runs unless it
+  clearly sends the owner's data somewhere unrelated to the work, has
+  nothing to do with the conversation the agent cites from its own 1:1
+  room with the owner (read by the host itself), or falls under the host's
+  deny-only device rule. With no usable citation, only the first and last
+  are asked.
 - **It fails closed.** If the gatekeeper can't judge, nothing runs.
 - **Settings are the owner's alone.** Only the owner's own machines can read
   or change a host's device rule or agent map, change its vault, or turn its connectors on and
@@ -63,9 +65,9 @@ Message bodies, contact names, web pages and file contents can carry a
 stranger's words. Latch treats them as data, never as instructions or
 permission:
 
-- Only the owner's own message an agent cites, as the owner's later
-  messages leave it, counts as permission. Text the owner quotes or
-  forwards from someone else does not.
+- Only the owner's own messages in the conversation an agent cites say
+  what the owner wants. Text the owner quotes or forwards from someone
+  else does not.
 - Nothing an agent reads can change the device rule, a sandbox policy or how a
   browser starts.
 

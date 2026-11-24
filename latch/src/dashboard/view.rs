@@ -589,8 +589,9 @@ fn decision(task: &Task, call: &Call) -> Vec<String> {
     let p = &gate["p"];
     if p.is_object() {
         lines.push(format!(
-            "Judge P: covered by the cited message {} | denied by the device rule {}",
-            score(&p["covered"]),
+            "Judge P: exfiltration {} | unconnected {} | denied by the device rule {}",
+            score(&p["exfiltration"]),
+            score(&p["unconnected"]),
             score(&p["denied"])
         ));
     } else if gate["class"] == "free" {
