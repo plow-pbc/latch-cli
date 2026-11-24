@@ -276,10 +276,6 @@ pub enum Command {
     /// Internal: the process a host starts for each browser session
     #[command(hide = true)]
     BrowserWorker(BrowserWorkerArgs),
-    /// Internal: stands where a browser worker's engine would, relaying its
-    /// pipe to the DevTools of a browser on 127.0.0.1:PORT
-    #[command(hide = true)]
-    CdpBridge { port: u16 },
     /// Internal: removes the helper versions this latch does not run,
     /// unless a host runs on the state folder; the installer runs it
     #[command(hide = true)]

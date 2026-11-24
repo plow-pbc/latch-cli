@@ -94,7 +94,7 @@ pub struct Cdp {
     pub stopped: bool,
     /// The app's own browser has no latch proxy. Check the requests of
     /// the attached tab and its descendants before allowing them.
-    pub scoped: bool,
+    pub(super) scoped: bool,
 }
 
 /// Attach only descendants private to this tab. Shared and service
@@ -163,6 +163,11 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 }
 
 impl Cdp {
+    pub(super) fn scope_to(&mut self, target: &str) {
+        self.scoped = true;
+        self.pages.insert(target.into());
+    }
+
     /// Sends one command and waits for its reply until `deadline`.
     /// `session` addresses a page attached with `flatten`.
     pub fn call(
@@ -662,6 +667,18 @@ mod tests {
         let stopped = cdp.reply_or(id, "Page.reload", deadline, dialog).unwrap();
         assert!(stopped.is_none());
         assert_eq!(cdp.take_events().len(), 1);
+    }
+
+    #[test]
+    fn scoped_cdp_keeps_the_owned_pages_load_events() {
+        let Pipes { mut cdp, .. } = pipes().unwrap();
+        cdp.scope_to("latch-target");
+        for frame in ["latch-target", "owner-target"] {
+            cdp.queue(json!({"method":"Page.frameStartedLoading", "params":{"frameId":frame}}));
+        }
+        let events = cdp.take_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["params"]["frameId"], "latch-target");
     }
 
     #[test]

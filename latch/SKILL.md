@@ -295,6 +295,7 @@ fixes it.
 - Optional `terminal-browser` uses the owner's own browser profile and
   logins, in one tab per session. Choose it when the owner wants you to work
   in their browser. The owner installs it separately and opens a pane first.
+  Use Chrome or Camoufox to fill vault secrets.
 - `engine_not_installed` names the setup in `details.setup`. When
   `details.installed` lists an engine that fits the task, you can open on it.
 - `session_ended`: the host restarted, and the session went with it. Never

@@ -81,38 +81,28 @@ pub fn requested(url: &str, local: bool) -> Result<(), Failure> {
     if local {
         return Ok(());
     }
-    match resolve(&parsed) {
-        Ok(addresses) => check_all(&parsed, addresses),
-        Err(_) => Ok(()),
+    if let Ok(Some(ip)) = nonpublic(&parsed) {
+        let host = parsed
+            .host_str()
+            .unwrap_or_default()
+            .trim_matches(['[', ']']);
+        return Err(refused(local_address(host, ip)));
     }
+    Ok(())
 }
 
-/// The attached tab has no proxy to recheck a name. Refuse a lookup that
-/// fails and any name with a nonpublic address.
+/// An attached tab has no proxy to recheck a name, so DNS errors are refused.
 pub(super) fn intercepted(url: &str) -> bool {
-    let Ok(Some(parsed)) = web(url) else {
-        return false;
-    };
-    resolve(&parsed).is_ok_and(|addresses| check_all(&parsed, addresses).is_ok())
+    matches!(web(url), Ok(Some(parsed)) if matches!(nonpublic(&parsed), Ok(None)))
 }
 
-fn resolve(parsed: &url::Url) -> io::Result<impl Iterator<Item = SocketAddr>> {
+fn nonpublic(parsed: &url::Url) -> io::Result<Option<IpAddr>> {
     let host = parsed.host_str().expect("web URL has a host");
     let port = parsed.port_or_known_default().expect("web URL has a port");
-    (host.trim_matches(['[', ']']), port).to_socket_addrs()
-}
-
-fn check_all(
-    parsed: &url::Url,
-    addresses: impl Iterator<Item = SocketAddr>,
-) -> Result<(), Failure> {
-    match addresses.map(|a| a.ip()).find(|ip| !public(*ip)) {
-        Some(ip) => Err(refused(local_address(
-            parsed.host_str().unwrap_or_default(),
-            ip,
-        ))),
-        None => Ok(()),
-    }
+    Ok((host.trim_matches(['[', ']']), port)
+        .to_socket_addrs()?
+        .map(|address| address.ip())
+        .find(|ip| !public(*ip)))
 }
 
 /// Refuses an address of any scheme but `http` and `https` (`about:blank`

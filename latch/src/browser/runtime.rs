@@ -54,7 +54,7 @@ pub struct Runtime {
     pub idle: Duration,
     /// On terminal-browser, the session's tab in the owner's browser,
     /// until the runtime closes it.
-    tab: std::sync::Mutex<Option<Tab>>,
+    tab: Option<Tab>,
 }
 
 struct Worker {
@@ -109,26 +109,15 @@ impl Runtime {
         idle: Duration,
         headless: bool,
     ) -> Result<Self, Failure> {
-        let tab = if engine == terminal_browser::ENGINE {
+        let mut tab = if engine == terminal_browser::ENGINE {
             Some(terminal_browser::open(&terminal_browser::program()?).await?)
         } else {
             None
         };
-        let launched = Self::launch(
-            latch,
-            state_dir,
-            engine,
-            profile,
-            idle,
-            headless,
-            tab.as_ref(),
-        )
-        .await;
+        let launched =
+            Self::launch(latch, state_dir, engine, profile, idle, headless, &mut tab).await;
         match launched {
-            Ok(mut runtime) => {
-                runtime.tab = std::sync::Mutex::new(tab);
-                Ok(runtime)
-            }
+            Ok(runtime) => Ok(runtime),
             Err(mut failure) => {
                 if let Some(tab) = tab
                     && let Err(close) = tab.close().await
@@ -147,7 +136,7 @@ impl Runtime {
         profile: Option<&Path>,
         idle: Duration,
         headless: bool,
-        tab: Option<&Tab>,
+        tab: &mut Option<Tab>,
     ) -> Result<Self, Failure> {
         let failed = |err: std::io::Error| Failure::new(code::engine_failed, err.to_string());
         let scratch = tempfile::Builder::new()
@@ -171,14 +160,13 @@ impl Runtime {
         if headless {
             command.arg("--headless");
         }
-        if let Some(tab) = tab {
+        if let Some(tab) = tab.as_ref() {
             command
                 .arg("--cdp-port")
                 .arg(tab.port.to_string())
                 .arg("--target")
                 .arg(&tab.target);
-        }
-        if tab.is_none() {
+        } else {
             if super::egress::local_allowed(state_dir)? {
                 command.arg("--allow-local-browsing");
             }
@@ -226,7 +214,7 @@ impl Runtime {
             pauses: AtomicU32::new(0),
             within,
             idle,
-            tab: std::sync::Mutex::new(None),
+            tab: tab.take(),
         })
     }
 
@@ -329,8 +317,7 @@ impl Runtime {
     /// Closes the session's tab in the owner's terminal-browser, once. A tab
     /// the browser would not close is the answer, and the host's log says so.
     pub(super) async fn release_tab(&self) -> Result<(), Failure> {
-        let tab = self.tab.lock().expect("tab lock").take();
-        let Some(tab) = tab else {
+        let Some(tab) = &self.tab else {
             return Ok(());
         };
         tab.close().await.inspect_err(|failure| {

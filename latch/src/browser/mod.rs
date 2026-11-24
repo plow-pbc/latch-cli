@@ -33,7 +33,7 @@
 
 pub mod camoufox;
 pub mod cdp;
-pub mod cdp_bridge;
+mod cdp_bridge;
 pub mod cft;
 pub mod client;
 pub mod core;

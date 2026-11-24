@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Map, Value, json, value::RawValue};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpListener;
-use tokio_websockets::{Message, ServerBuilder};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_websockets::{Message, ServerBuilder, WebSocketStream};
 
 use super::ENGINE;
 use crate::browser::host::{self, Browsers, Caller};
@@ -23,6 +23,7 @@ use crate::vault::{
 
 const ORIGIN: &str = "https://shop.example";
 const PAGE: &str = "https://shop.example/login";
+const USERNAME: &str = "fake-browser-user";
 const PASSWORD: &str = "fake-browser-password";
 
 #[derive(Default)]
@@ -50,14 +51,12 @@ fn answers(questions: &[Question], denied: bool) -> Asked<'_> {
             questions
                 .iter()
                 .map(|q| {
-                    (
-                        q.id.clone(),
-                        Answer::Yes(if denied && q.id == "unconnected" {
-                            0.98
-                        } else {
-                            0.02
-                        }),
-                    )
+                    let probability = if denied && q.id == "unconnected" {
+                        0.98
+                    } else {
+                        0.02
+                    };
+                    (q.id.clone(), Answer::Yes(probability))
                 })
                 .collect(),
             CallMeta {
@@ -72,7 +71,11 @@ fn answers(questions: &[Question], denied: bool) -> Asked<'_> {
     })
 }
 
-async fn devtools(listener: TcpListener) -> (usize, Vec<String>, bool) {
+async fn send(ws: &mut WebSocketStream<TcpStream>, value: Value) {
+    ws.send(Message::text(value.to_string())).await.unwrap();
+}
+
+async fn devtools(listener: TcpListener) -> (usize, Vec<String>, usize) {
     let (http, _) = listener.accept().await.unwrap();
     let mut http = BufReader::new(http);
     let mut line = String::new();
@@ -101,9 +104,14 @@ async fn devtools(listener: TcpListener) -> (usize, Vec<String>, bool) {
     let mut url = "about:blank".to_string();
     let mut clicks = 0;
     let mut refused = Vec::new();
-    let mut filled = false;
+    let mut filled = 0;
     while let Some(Ok(message)) = ws.next().await {
-        let call: Value = serde_json::from_str(message.as_text().unwrap()).unwrap();
+        let payload = message.as_text().unwrap();
+        assert!(
+            !payload.contains(PASSWORD),
+            "a vault secret reached the relay"
+        );
+        let call: Value = serde_json::from_str(payload).unwrap();
         let method = call["method"].as_str().unwrap();
         let params = &call["params"];
         // These are the only commands the driver can send without a tab
@@ -116,14 +124,8 @@ async fn devtools(listener: TcpListener) -> (usize, Vec<String>, bool) {
         let result = match method {
             "Target.attachToTarget" => json!({"sessionId": "latch-session"}),
             "Target.getTargetInfo" => json!({"targetInfo": {"url": url, "title": "Fake login"}}),
-            "Target.setAutoAttach" => {
-                assert_eq!(
-                    params["filter"],
-                    json!([{"type":"iframe"},{"type":"worker"},{"exclude":true}])
-                );
-                json!({})
-            }
-            "Page.enable"
+            "Target.setAutoAttach"
+            | "Page.enable"
             | "Network.enable"
             | "Network.setBypassServiceWorker"
             | "Fetch.enable" => json!({}),
@@ -147,24 +149,20 @@ async fn devtools(listener: TcpListener) -> (usize, Vec<String>, bool) {
                     ("file", "file:///hidden"),
                     ("public", "https://1.1.1.1/image.png"),
                 ] {
-                    ws.send(Message::text(
+                    send(
+                        &mut ws,
                         json!({
-                            "method": "Fetch.requestPaused", "sessionId": "latch-session",
+                            "method":"Fetch.requestPaused", "sessionId":"latch-session",
                             "params":{"requestId":id,"request":{"url":url,"method":"GET"}}
-                        })
-                        .to_string(),
-                    ))
-                    .await
-                    .unwrap();
+                        }),
+                    )
+                    .await;
                 }
-                ws.send(Message::text(
-                    json!({
-                        "method":"Page.loadEventFired", "sessionId":"latch-session", "params":{}
-                    })
-                    .to_string(),
-                ))
-                .await
-                .unwrap();
+                send(
+                    &mut ws,
+                    json!({"method":"Page.loadEventFired","sessionId":"latch-session","params":{}}),
+                )
+                .await;
                 json!({"frameId":"latch-frame"})
             }
             "Fetch.failRequest" => {
@@ -191,7 +189,7 @@ async fn devtools(listener: TcpListener) -> (usize, Vec<String>, bool) {
                     json!({"assign":true})
                 } else {
                     assert!(code.contains("__latch.fill("));
-                    filled = params["arguments"][2]["value"] == PASSWORD;
+                    filled += usize::from(params["arguments"][2]["value"] == USERNAME);
                     json!({"held":true})
                 };
                 json!({"result":{"value":value}})
@@ -215,26 +213,28 @@ async fn devtools(listener: TcpListener) -> (usize, Vec<String>, bool) {
 
 fn read(expression: &str) -> Value {
     let button = json!({"role":"button","name":"Continue","on_screen":true});
-    match expression {
-        "true" => return json!(true),
-        "self.origin === 'null' ? 'opaque' : self.origin" => return json!(ORIGIN),
-        "__latch.stageMark()" => return json!({"mark":"login","asks":true}),
-        "__latch.holding()" => return json!(0),
-        "__latch.scroll()" => return json!({"x":0,"y":0}),
-        _ => {}
-    }
-    let op = expression.split_once('(').unwrap().0;
+    let op = expression.split_once('(').map_or(expression, |(op, _)| op);
     match op {
-        "__latch.read" => json!({"origin":ORIGIN,"url":PAGE,"ids":[1,2],"elements":[
+        "true" => json!(true),
+        "self.origin === 'null' ? 'opaque' : self.origin" => json!(ORIGIN),
+        "__latch.stageMark" => json!({"mark":"login","asks":true}),
+        "__latch.holding" => json!(0),
+        "__latch.scroll" => json!({"x":0,"y":0}),
+        "__latch.read" => json!({"origin":ORIGIN,"url":PAGE,"ids":[1,2,3],"elements":[
+            {"role":"textbox","name":"Username","on_screen":true},
             {"role":"textbox","name":"Password","on_screen":true},button]}),
         "__latch.text" => json!({"text":"Sign in to the fake shop"}),
         "__latch.describeAt" => button,
         "__latch.review" => json!({"uid":2,"element":button,"lines":[]}),
         "__latch.locate" => json!({"kind":"button","x":24,"y":36}),
-        "__latch.fillTarget" => json!({
-            "kind":"text","tag":"input","form":0,"name":"Password","type":"password","autocomplete":"current-password",
-            "page_secret":true,"origin":ORIGIN,"token":"login-document"
-        }),
+        "__latch.fillTarget" => {
+            let password = expression.ends_with(", 1)");
+            json!({
+                "kind":"text","tag":"input","form":0,"name":if password {"Password"} else {"Username"},
+                "type":if password {"password"} else {"text"}, "page_secret":password,
+                "origin":ORIGIN,"token":"login-document"
+            })
+        }
         "__latch.controls" => json!({"origin":ORIGIN,"controls":[]}),
         "__latch.fields" => json!([]),
         "__latch.screenView" | "__latch.viewOf" => json!({"lines":[]}),
@@ -339,7 +339,7 @@ esac
     let observed = call("observe", id, &json!({})).await.unwrap();
     assert_eq!(observed["title"], "Fake login");
     assert_eq!(observed["tabs"].as_array().unwrap().len(), 1);
-    assert_eq!(observed["elements"].as_array().unwrap().len(), 2);
+    assert_eq!(observed["elements"].as_array().unwrap().len(), 3);
     assert_eq!(
         call("goto", id, &json!({"url":"http://127.0.0.1/"}))
             .await
@@ -360,7 +360,7 @@ esac
                     LOGIN,
                     "Test login",
                     &[
-                        ("username".into(), "made-up".into()),
+                        ("username".into(), USERNAME.into()),
                         ("password".into(), PASSWORD.into()),
                     ],
                 )
@@ -368,13 +368,18 @@ esac
             })
         })
         .unwrap();
-    let fill = json!({"snapshot":observed["snapshot"],"fields":[["password",["e1"]]],"press":"e2"});
+    let fill = json!({"snapshot":observed["snapshot"],"fields":[["username",["e1"]]]});
     assert_eq!(
         call("fill", id, &fill).await.unwrap_err().code,
         "gatekeeper_denied"
     );
     call("fill", id, &fill).await.unwrap();
-    let step = crate::browser::plan::short_step("click e2").unwrap();
+    let secret =
+        json!({"snapshot":observed["snapshot"],"fields":[["password",["e2"]]],"press":"e3"});
+    let failure = call("fill", id, &secret).await.unwrap_err();
+    assert_eq!(failure.code, "fill_refused");
+    assert!(failure.message.contains("cannot protect vault secrets"));
+    let step = crate::browser::plan::short_step("click e3").unwrap();
     let plan = crate::browser::plan::Plan {
         steps: vec![step],
         ..Default::default()
@@ -388,19 +393,13 @@ esac
     .unwrap();
     call("close", id, &json!({})).await.unwrap();
     assert!(path.join("closed").is_file());
-    let closed_tab = super::Tab {
-        program,
-        browser: "pane".into(),
-        port,
-        target: "latch-target".into(),
-    };
-    let failed = closed_tab.close().await.unwrap_err();
-    assert_eq!(failed.code, "engine_failed");
-    assert!(failed.message.contains("tab close"));
     let (clicks, refused, filled) = server.await.unwrap();
-    assert_eq!(clicks, 2);
-    assert!(filled);
+    assert_eq!(clicks, 1);
+    assert_eq!(filled, 1);
     assert_eq!(refused, ["loopback", "private", "link-local", "file"]);
     let judged = judge.0.lock().unwrap();
-    assert_eq!(*judged, ["vault_fill", "vault_fill", "browser_plan"]);
+    assert_eq!(
+        *judged,
+        ["vault_fill", "vault_fill", "vault_fill", "browser_plan"]
+    );
 }

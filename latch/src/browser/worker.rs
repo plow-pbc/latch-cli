@@ -2,11 +2,8 @@
 //! `latch browser-worker --engine E --profile DIR --scratch DIR [--headless]
 //! [--allow-local-browsing]` (hidden from `--help`). It launches engine E
 //! on the session's profile in DIR (`profile.rs`) and drives it, CfT over
-//! the CDP pipe and Camoufox through its helper. With `--engine
-//! terminal-browser --cdp-port P --target T` it launches nothing: it drives
-//! tab T, which the host opened in the owner's terminal-browser
-//! (`terminal_browser.rs`), through the bridge to that browser's DevTools
-//! on 127.0.0.1:P, with no profile of the session's own.
+//! the CDP pipe and Camoufox through its helper. For terminal-browser the
+//! worker attaches to the tab its host opened via loopback DevTools.
 //!
 //! On macOS it is not inside latch's Seatbelt: a Seatbelt-confined process
 //! can only re-apply its own profile, and every Chrome or Firefox helper

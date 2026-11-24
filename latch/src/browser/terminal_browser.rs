@@ -10,13 +10,10 @@ use serde_json::json;
 
 use crate::failure::{Failure, code};
 
-/// The engine's name, in commands and internally alike.
 pub const ENGINE: &str = "terminal-browser";
 
-/// Where the owner gets it.
 pub const INSTALL: &str = "https://terminal-browser.sh";
 
-/// The owner's `terminal-browser` program.
 pub fn program() -> Result<PathBuf, Failure> {
     if let Some(named) = std::env::var_os("LATCH_TERMINAL_BROWSER") {
         let path = std::path::absolute(&named)
@@ -51,9 +48,7 @@ fn not_installed() -> Failure {
 pub struct Tab {
     program: PathBuf,
     browser: String,
-    /// The browser's DevTools port on 127.0.0.1.
     pub port: u16,
-    /// The tab's DevTools target.
     pub target: String,
 }
 

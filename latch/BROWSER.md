@@ -111,37 +111,30 @@ fields the page kept says so in its answer's `next`. Any other kind's
 
 ## terminal-browser (optional)
 
-Install [terminal-browser](https://terminal-browser.sh) separately on the
-host and run `terminal-browser open` in a terminal pane. Use
-`latch browser setup --engine terminal-browser` to see the setup
-instructions. The host finds the CLI on the owner's login PATH, or uses the
-executable named in its `LATCH_TERMINAL_BROWSER` environment variable.
+Install [terminal-browser](https://terminal-browser.sh) separately and
+run `terminal-browser open` in a pane on the host. The host uses
+`LATCH_TERMINAL_BROWSER` if set, then looks on the owner's login PATH.
+`latch browser setup --engine terminal-browser` prints the instructions.
 
 ```sh
 latch browser --host my-mac open --engine terminal-browser https://example.com/
 ```
 
-Each session opens one tab in the most recently started terminal-browser
-pane. It uses the **owner's own browser profile**, including their cookies,
-logins and site data. Choose it only for agents you trust with those sessions.
-The usual gatekeeper checks apply. `close` waits for terminal-browser to
-close the session's tab. For another page in a separate tab, open another
-session. Downloads follow terminal-browser's settings and are unavailable
-through `latch browser downloads` and `download get`.
+A session opens and closes one tab in the most recently started pane.
+It uses the **owner's own browser profile**, including cookies, logins
+and site data. The usual gatekeeper checks apply. Fills that release vault
+secrets require Chrome or Camoufox because terminal-browser cannot guard
+popups. Downloads use terminal-browser's settings.
 
-The owner can set `{"browser_engine": "terminal-browser"}` in the host's
-`host.json` to choose it whenever `open` omits `--engine`. The setting
-also accepts `camoufox` or `chrome`. Without it, Camoufox remains the
-first choice and Chrome the second. An explicit `--engine` takes precedence.
+The owner can set `{"browser_engine": "terminal-browser"}` in `host.json`
+for calls without `--engine`. The setting also accepts `camoufox` or
+`chrome`. If omitted, Camoufox is the first choice, then Chrome.
 
-Latch intercepts requests on its tab and checks HTTP and HTTPS destinations
-against its public-address policy. The browser resolves hostnames for the
-actual connection, so the DNS check cannot pin the connection to the
-address it approved. WebSockets and browser-managed popup targets are
-outside this interception. Use Camoufox or Chrome when you need the latch
-network proxy and a separate profile. If the host crashes, CDP disconnects
-and releases its interception. A tab that remains open can be closed in
-the pane.
+Latch checks HTTP and HTTPS destinations on its tab. Chromium resolves
+hostnames separately, so the check cannot pin the connection address.
+WebSockets and browser-managed popups fall outside this interception.
+When the host exits unexpectedly, DevTools disconnects and any remaining
+tab can be closed in the pane.
 
 ## Calling from the host itself
 

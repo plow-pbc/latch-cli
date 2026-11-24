@@ -3,10 +3,8 @@
 //! socket releases the driver's DevTools sessions and interceptions.
 
 use std::error::Error;
-use std::fs::File;
 use std::io;
-use std::os::fd::FromRawFd;
-use std::process::ExitCode;
+use std::os::fd::OwnedFd;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -17,39 +15,25 @@ use tokio_websockets::{ClientBuilder, Message};
 
 const CONNECT: Duration = Duration::from_secs(5);
 
-pub fn run(port: u16) -> ExitCode {
-    let result = (|| {
-        let (commands, replies) = pipes()?;
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
-            .block_on(relay(port, commands, replies))
-    })();
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            eprintln!("cdp-bridge: {err}");
-            ExitCode::FAILURE
-        }
-    }
+/// Runs beside the driver's blocking pipe reader. The worker and the pipe
+/// own the connection's lifetime, including when the host dies.
+pub(super) fn start(port: u16, commands: OwnedFd, replies: OwnedFd) -> io::Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    std::thread::Builder::new()
+        .name("cdp-relay".into())
+        .spawn(move || {
+            if let Err(err) = runtime.block_on(relay(port, commands, replies)) {
+                eprintln!("CDP relay: {err}");
+            }
+        })?;
+    Ok(())
 }
 
-fn pipes() -> io::Result<(File, File)> {
-    // SAFETY: the worker gives the bridge ownership of both pipe ends.
-    // Check they're open before Tokio can claim these descriptor numbers.
-    unsafe {
-        if libc::fcntl(3, libc::F_GETFL) & libc::O_ACCMODE != libc::O_RDONLY
-            || libc::fcntl(4, libc::F_GETFL) & libc::O_ACCMODE != libc::O_WRONLY
-        {
-            return Err(io::Error::other("the bridge needs the worker's CDP pipe"));
-        }
-        Ok((File::from_raw_fd(3), File::from_raw_fd(4)))
-    }
-}
-
-async fn relay(port: u16, commands: File, replies: File) -> Result<(), Box<dyn Error>> {
-    let mut commands = BufReader::new(Receiver::from_file(commands)?);
-    let mut replies = Sender::from_file(replies)?;
+async fn relay(port: u16, commands: OwnedFd, replies: OwnedFd) -> Result<(), Box<dyn Error>> {
+    let mut commands = BufReader::new(Receiver::from_owned_fd(commands)?);
+    let mut replies = Sender::from_owned_fd(replies)?;
     let path = socket_path(port).await?;
     let client = ClientBuilder::new().uri(&format!("ws://127.0.0.1:{port}{path}"))?;
     let (mut socket, _) = tokio::time::timeout(CONNECT, client.connect()).await??;
