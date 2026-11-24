@@ -4,13 +4,14 @@
 //! The device rule is one plain text in the owner's words naming what is
 //! always denied on this host ("Never pay anyone"): what agents do, never
 //! what they read, as reads are not judged. It grants
-//! nothing: permission comes only from the owner's message an agent cites.
+//! nothing: it is one of the gatekeeper's three checks, and only denies.
 //! No file denies nothing; a file that can't be read refuses every judged
 //! call. It is read at every judgment, so an edit applies at once.
 //!
 //! The agent map names each agent's Swarm account, by Plow agent uid: the
-//! gatekeeper accepts a citation only from that account's own 1:1 rooms
-//! with the owner. An unmapped agent is refused.
+//! gatekeeper reads an agent's citation as that account, from any room it
+//! and the owner have both joined. An unmapped agent's citation gives no
+//! conversation, and its actions are judged without one.
 //!
 //! Older latches kept grant-style rules in `rules/`. Nothing reads that
 //! folder; a host moves it aside when it starts (`archive_legacy`).
