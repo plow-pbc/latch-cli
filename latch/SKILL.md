@@ -235,15 +235,15 @@ password, confirming an email, paying what they would expect, saving what
 the task needs.
 
 Pass `--intent ROOM/EVENT`, the id of the owner's message you are acting
-on, so the host can judge by the conversation. Take it from your own 1:1
-room with the owner (your Swarm DM with them, or your iMessage room): each
+on, so the host can judge by the conversation. Take it from the room
+where the owner asked (your 1:1 with them, or a group you share): each
 message's `<swarm-message>` tag carries its `room` and `event_id`. The host
 reads that message itself, with everything the owner said after it and the
 messages around it. A later "stop" or change wins. Only the owner's own
 words say what they want: your messages, others', and text the owner quotes
 from someone else are context. With no citation, or one the host can't use
-(not the owner's, another room, a closed thread), the action is judged
-without the conversation.
+(not the owner's, a closed thread), the action is judged without the
+conversation.
 
 The owner may also keep a device rule on a host: what agents are always
 denied there ("Never pay anyone or delete my photos"). It covers what agents do, never what they
@@ -264,7 +264,7 @@ Exit 4 is a refusal; its `next` says the one thing to do:
   owner in your 1:1 room, naming exactly what you will do, and cite their
   answer. Refused again, stop and tell them. Its `details.chat`, when
   present, says why your citation gave no conversation (`none`,
-  `not_owner_dm`, `agent_unmapped`: the owner runs `latch agents map` on
+  `thread_closed`, `agent_unmapped`: the owner runs `latch agents map` on
   the host, …).
 - `confirm_needed`: a browser step that can't be undone, nothing sent. If
   it is what the task needs, carry it out with `latch browser --session ID

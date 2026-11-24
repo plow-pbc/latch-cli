@@ -158,11 +158,12 @@ with you, or its iMessage-bridge room). The host reads that message itself,
 as one of your own devices, plus your later messages in its thread (or
 room) and the messages around it. A later “stop” wins. Only your own words
 say what you want: an agent's or anyone else's messages, and text you quote
-or forward from someone else (“Bob says pay him $500”), are context. A
-citation gives no conversation, and the action is judged on the other two
-checks alone, when there is none or it is not yours (one sent from the
-host's own Swarm device never is), not in the agent's own 1:1 room with
-you, in a thread you closed with ✅ or ❌, after a removed message or
+or forward from someone else (“Bob says pay him $500”), are context. Any
+room you share with the agent may be cited, a group's included: a
+conversation can only add a reason to refuse. A citation gives no
+conversation, and the action is judged on the other two checks alone, when
+there is none or it is not yours (one sent from the host's own Swarm device
+never is), in a thread you closed with ✅ or ❌, after a removed message or
 reaction, not all readable, or the host maps the agent to no Swarm account
 (`latch agents map`). The audit's `gate.chat` says which. Latch has no
 approval prompt: on a refusal the agent asks you in its 1:1 room, saying

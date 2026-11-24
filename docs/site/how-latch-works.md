@@ -37,8 +37,9 @@ run.
   ROOM/EVENT`, the id of your message it acts on, from its own 1:1 room
   with you (its Swarm DM with you, or its iMessage room). The host reads
   that message itself, with your later messages in its thread: a later
-  “stop” wins. A missing citation, someone else's message, another room or
-  a thread you closed with ✅ or ❌ gives no conversation, and only the
+  “stop” wins. A group you share with the agent counts too. A missing
+  citation, someone else's message or a thread you closed with ✅ or ❌
+  gives no conversation, and only the
   other two checks are asked. Each host maps the agent to its Swarm
   account: `latch agents map my-agent @my-agent:plow.co`. An agent quoting
   you, other people's messages and web pages are context, never you.
