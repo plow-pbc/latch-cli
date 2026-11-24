@@ -8,10 +8,11 @@
 //! No file denies nothing; a file that can't be read refuses every judged
 //! call. It is read at every judgment, so an edit applies at once.
 //!
-//! The agent map names each agent's Swarm account, by Plow agent uid: the
-//! gatekeeper reads an agent's citation as that account, from any room it
-//! and the owner have both joined. An unmapped agent's citation gives no
-//! conversation, and its actions are judged without one.
+//! The agent map names each agent's Swarm account, by Plow agent uid. The
+//! gatekeeper reads an agent's citation as the owner, and it counts only
+//! from a room both the owner and that account have joined. An unmapped
+//! agent's citation gives no conversation, and its actions are judged
+//! without one.
 //!
 //! Older latches kept grant-style rules in `rules/`. Nothing reads that
 //! folder; a host moves it aside when it starts (`archive_legacy`).
