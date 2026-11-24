@@ -165,7 +165,7 @@ const ENTRIES: &[Entry] = &[
         owner_only: true,
         connector: None,
         examples: &[ex(
-            "Take Scout's citations only from @scout:plow.co's 1:1 rooms with you",
+            "Read Scout's citations as @scout:plow.co",
             &["agents", "map", "Scout", "@scout:plow.co"],
         )],
     },

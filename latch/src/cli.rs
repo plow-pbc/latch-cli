@@ -96,7 +96,7 @@ Agents:
   (exfiltration), has nothing to do with what the owner has been saying to
   you (unconnected), or falls under the owner's device rule
   (denied_by_rule). Pass --intent ROOM/EVENT, the id of the owner's message
-  you are acting on in your own 1:1 room with them, so the host reads that
+  you are acting on in a room you share with them, so the host reads that
   conversation too. On exfiltration or unconnected, latch has no approval
   prompt: ask the owner there, naming exactly what you will do, and cite
   their answer; refused again, stop and tell them. denied_by_rule and
@@ -353,9 +353,9 @@ pub struct BrowserArgs {
     /// The session to use: the id `open` answered
     #[arg(long, env = "LATCH_BROWSER_SESSION", global = true)]
     pub session: Option<String>,
-    /// The owner's message this agent acts on, as <room>/<event>, from its
-    /// own 1:1 room with the owner: the host's gatekeeper reads it and
-    /// what the owner said after it. Reads need none. Refused on owner
+    /// The owner's message this agent acts on, as <room>/<event>, from a
+    /// room it shares with the owner: the host's gatekeeper reads it and
+    /// what the owner said after it, as context. Optional. Refused on owner
     /// calls and local modes
     #[arg(long, value_name = "ROOM/EVENT", global = true)]
     pub intent: Option<String>,
@@ -680,8 +680,8 @@ pub struct VaultArgs {
     #[arg(long, env = "LATCH_HOST", global = true)]
     pub host: Option<String>,
     /// The owner's message an agent's `link` acts on, as <room>/<event>,
-    /// from its own 1:1 room with the owner. Refused on owner calls, local
-    /// modes and every other command
+    /// from a room it shares with the owner, as context. Optional. Refused
+    /// on owner calls, local modes and every other command
     #[arg(long, value_name = "ROOM/EVENT", global = true)]
     pub intent: Option<String>,
     #[command(subcommand)]
@@ -1135,8 +1135,9 @@ pub enum AgentsAction {
     Show { agent: String },
     /// Map an agent to its Swarm account, on a host
     ///
-    /// The host's gatekeeper accepts an agent's --intent only from that
-    /// account's own 1:1 rooms with you; an unmapped agent is refused.
+    /// The host's gatekeeper reads an agent's --intent as that account, from
+    /// any room it shares with you; an unmapped agent's actions are judged
+    /// without the conversation.
     /// AGENT is its name, the peer name of the latch it calls from, or its
     /// uid; SWARM_ID is like @name:server
     Map {
@@ -1563,9 +1564,9 @@ pub struct HostArg {
     /// saved
     #[arg(long, env = "LATCH_HOST")]
     pub host: Option<String>,
-    /// The owner's message this agent acts on, as <room>/<event>, from its
-    /// own 1:1 room with the owner: the host's gatekeeper reads it and
-    /// what the owner said after it. Reads need none. Refused on owner
+    /// The owner's message this agent acts on, as <room>/<event>, from a
+    /// room it shares with the owner: the host's gatekeeper reads it and
+    /// what the owner said after it, as context. Optional. Refused on owner
     /// calls and local modes
     #[arg(long, value_name = "ROOM/EVENT")]
     pub intent: Option<String>,

@@ -67,7 +67,7 @@ latch browser open --host my-mac https://example.com
 |---|---|---|
 | `latch agents` | Host | List your agents, with their lines and Plow status. Owner only. |
 | `latch agents show` | Host | Show one agent, by its uid or its exact name. Owner only.<br>One agent, by its name: `latch agents show Scout` |
-| `latch agents map` | Host | Map an agent to its Swarm account, on a host. Owner only.<br>Take Scout's citations only from @scout:plow.co's 1:1 rooms with you: `latch agents map Scout @scout:plow.co` |
+| `latch agents map` | Host | Map an agent to its Swarm account, on a host. Owner only.<br>Read Scout's citations as @scout:plow.co: `latch agents map Scout @scout:plow.co` |
 | `latch agents catalog` | Host | The kinds of cloud agent Plow can run, for `agents new --cloud`. Owner only. |
 | `latch agents start-by-text` | Host | Show how to start a cloud agent by texting Plow. Owner only. |
 | `latch agents lines` | Host | Plow's phone lines, and which are free for a new agent. Owner only. |
