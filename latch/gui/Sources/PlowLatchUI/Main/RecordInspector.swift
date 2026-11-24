@@ -311,7 +311,6 @@ struct Why: View {
             }
             if gate.deviceRule != nil { LabeledContent("Also judged by", value: "Your device rule") }
             if let p = gate.p {
-                Likelihood(title: "Covered by your message", value: p["covered"] ?? nil, tint: .green)
                 Likelihood(title: "Denied by your device rule", value: p["denied"] ?? nil, tint: .red)
             }
             if gate.model != nil || gate.latencyMs != nil || gate.cost != nil {

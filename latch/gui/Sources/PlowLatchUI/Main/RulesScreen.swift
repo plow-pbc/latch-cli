@@ -120,7 +120,7 @@ private struct LastJudged: View {
     private func why(_ record: AuditRecord) -> String {
         let verdict = record.gate?.verdict ?? record.outcome
         if verdict == "allow" {
-            return record.agent == nil ? "Your device rule doesn't deny it." : "Your message asks for it, and your device rule doesn't deny it."
+            return record.agent == nil ? "Your device rule doesn't deny it." : "No check found a problem, and your device rule doesn't deny it."
         }
         if verdict == "denied_by_rule", let rule = record.gate?.deviceRule.flatMap({ app.ruleText($0, on: host) }) {
             return "Your device rule denies it: \u{201C}\(rule)\u{201D}"
