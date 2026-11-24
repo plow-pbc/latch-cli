@@ -132,12 +132,10 @@ for calls without `--engine`. The setting also accepts `camoufox` or
 
 Latch checks for loopback, link-local and private addresses on `open`,
 `goto` and ordinary HTTP and HTTPS loads in its tab. Page scripts can
-still reach local addresses. Popups opened with `window.open` or
-`target=_blank`, requests from shared or service workers, and WebSockets
-bypass these checks. The `allow_local_browsing` setting applies only to
-Chrome and Camoufox. Chromium makes its own DNS lookup, so the address it
-connects to can differ from the address Latch checked.
-
+still reach local addresses through popups (`window.open`, `target=_blank`),
+shared workers, service workers and WebSockets, which bypass these checks.
+Only Chrome and Camoufox honor `allow_local_browsing`. Chromium does its own
+DNS lookup, so it can connect to a different address than Latch checked.
 When the host exits unexpectedly, DevTools disconnects and any remaining
 tab can be closed in the pane.
 
