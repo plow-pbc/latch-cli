@@ -9,13 +9,15 @@
 //! The owner is the account `swarm signin` signed in, saved in the state
 //! folder; a phone account counts as the owner when the server's identity
 //! record says it speaks for them, on a message or a reaction alike. A
-//! room is the agent's own 1:1 with the owner when every member has joined
+//! room is shared when the agent and the owner have both joined it, and a
+//! citation counts only from a shared room. A shared room is also the
+//! agent's own 1:1 with the owner, for the audit, when every member has joined
 //! (an invitation counts for nothing) and the only ones besides the agent
 //! are the owner and phone accounts that speak for them; the iMessage
 //! bridge's notice account on the owner's server is no one. Nothing sent from
 //! latch's own device is the owner's, and a later redaction of someone else's
 //! message or reaction, or any as the owner, spoils the citation. An answer missing any part the
-//! gatekeeper reads is refused, never read as empty.
+//! gatekeeper reads is an error, never read as empty.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

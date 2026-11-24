@@ -204,12 +204,8 @@ without a model call.
   The judgment runs at Plow, so keep credentials out of arguments.
 - **Signing in with the vault.** A saved login fills only on its own sites,
   and the agent never receives its values. Its site says where a login may
-  go, not that it may be used: signing in still needs your message.
-  Asking for something to be done on a site covers signing in there,
-  including when you ask the agent to go to it, look something up or open
-  your link, or nudge it to sign in after it says it needs to. This covers
-  only signing in, not buying, sending, accepting or changing things
-  afterwards. An explicit “don't sign in” still wins. Before asking the
+  go. Signing in is a step of any task on that site, and is judged like the
+  task's other steps. Before asking the
   model, code refuses a login fill unless the page is one of its saved
   sites or alternate top-level sites (`login_site_mismatch`). The field's
   frame is checked again before any value is released.
@@ -395,7 +391,7 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
 | Another machine's dashboard or logs | Not supported |
 | Exec stdin over 16 KiB, or stdin that isn't UTF-8 text | Refused (`stdin_not_judgeable`, exit 2) |
 | Browsing anything but web addresses, or local addresses without `host.json` | Refused |
-| Per-agent permission lists | None, by design: each action needs your message, and `--deny-exec=AGENT_UID` refuses exec to one agent |
+| Per-agent permission lists | None, by design: each action is judged by the gatekeeper's three checks, and `--deny-exec=AGENT_UID` refuses exec to one agent |
 | A state folder in a format this Latch doesn't read | Refused (`state_format`); there's no migration |
 
 ## 10. Where a host runs

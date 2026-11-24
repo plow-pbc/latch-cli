@@ -18,7 +18,7 @@ use crate::plow::Plow;
 use crate::serve::Done;
 
 /// What `show` always says.
-pub const WARNING: &str = "The device rule only denies: an agent acts only on the owner's message it cites. It is judged, not guaranteed; --deny-exec is enforced in code.";
+pub const WARNING: &str = "The device rule only denies: an agent's action runs unless it clearly falls under the rule, sends your data somewhere unrelated, or has nothing to do with what you've said. It is judged, not guaranteed; --deny-exec is enforced in code.";
 
 /// `rules`: one owner command on the device rule or agent map in
 /// `state_dir`, for the host named `host`. `kind` is the caller's kind as

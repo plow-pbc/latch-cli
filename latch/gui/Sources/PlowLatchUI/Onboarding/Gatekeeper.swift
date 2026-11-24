@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Setup's gatekeeper screen, as two gate lines: an agent acts only on a
-/// message of yours (gate 1, above), and never past your Mac's rule (gate
-/// 2, below). Each sample request crosses the lines as the real gate rules
+/// Setup's gatekeeper screen, as two gate lines: an agent stops at what
+/// you never asked for (gate 1, above), and never goes past your Mac's
+/// rule (gate 2, below). Each sample request crosses the lines as the real gate rules
 /// on it, stopping at the first that blocks it. The rule is saved on
 /// Continue, blank included; the message is an example, never saved.
 struct RulesView: View {

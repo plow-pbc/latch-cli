@@ -402,7 +402,7 @@ impl Setup {
             return;
         }
         say(
-            "Your agents act only on a message of yours they cite. Name anything they must never do on this machine, whatever a message says (such as \"Never pay anyone or delete my photos\"), or leave it blank for nothing. Reads are never judged, so this covers what they do, not what they read.",
+            "Your agents act unless they'd send your data somewhere unrelated or stray from what you've said. Name anything they must never do on this machine, whatever a message says (such as \"Never pay anyone or delete my photos\"), or leave it blank for nothing. Reads are never judged, so this covers what they do, not what they read.",
         );
         let answer = self.input().answer("Always deny: ");
         let args = ["rules", "set", "--revision", "none", answer.as_str()];
