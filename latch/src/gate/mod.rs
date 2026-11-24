@@ -68,7 +68,7 @@ use thread::{IntentRef, Thread, ThreadSource};
 pub const MODEL: &str = "typesafe/jev-1.14";
 /// An agent's check finds its problem from this P(yes) up: only a clear yes
 /// refuses.
-pub const CLEAR_P: f64 = 0.7;
+pub const CLEAR_P: f64 = 0.6;
 /// The device rule denies the owner's own call from this P(yes) up.
 pub const OWNER_DENIED_P: f64 = 0.5;
 

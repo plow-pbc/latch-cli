@@ -251,7 +251,7 @@ fn reason(judgment: &Judgment) -> &str {
 async fn an_action_runs_unless_a_check_clearly_finds_its_problem() {
     let cases: [(&str, Grading); 5] = [
         ("allow", |_| Some(NOTHING)),
-        ("allow", |_| Some((0.6, 0.6, 0.6))),
+        ("allow", |_| Some((0.55, 0.55, 0.55))),
         ("denied_by_rule", |_| Some((0.9, 0.0, 0.0))),
         ("exfiltration", |_| Some((0.0, 0.9, 0.0))),
         ("unconnected", |_| Some((0.0, 0.0, 0.9))),
@@ -819,7 +819,7 @@ async fn an_allowed_action_runs_only_once_its_gate_record_is_written() {
 #[tokio::test]
 async fn the_owners_call_is_denied_from_half_and_an_agents_from_the_clear_line() {
     let host = host(
-        Judge::new(|_| Some((0.6, 0.0, 0.0))),
+        Judge::new(|_| Some((0.55, 0.0, 0.0))),
         Ok(Some(asked("Send Bob the invoice"))),
     );
     host.deny("Never email anyone at example.com.");
