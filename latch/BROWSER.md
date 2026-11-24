@@ -130,9 +130,14 @@ The owner can set `{"browser_engine": "terminal-browser"}` in `host.json`
 for calls without `--engine`. The setting also accepts `camoufox` or
 `chrome`. If omitted, Camoufox is the first choice, then Chrome.
 
-Latch checks HTTP and HTTPS destinations on its tab. Chromium resolves
-hostnames separately, so the check cannot pin the connection address.
-WebSockets and browser-managed popups fall outside this interception.
+Latch checks for loopback, link-local and private addresses on `open`,
+`goto` and ordinary HTTP and HTTPS loads in its tab. Page scripts can
+still reach local addresses. Popups opened with `window.open` or
+`target=_blank`, requests from shared or service workers, and WebSockets
+bypass these checks. The `allow_local_browsing` setting applies only to
+Chrome and Camoufox. Chromium makes its own DNS lookup, so the address it
+connects to can differ from the address Latch checked.
+
 When the host exits unexpectedly, DevTools disconnects and any remaining
 tab can be closed in the pane.
 
