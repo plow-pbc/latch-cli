@@ -1478,9 +1478,10 @@ async fn a_confirmed_send_carries_on_its_allowed_plan(engine: &str) {
     let mut host = Host::start(&state, &site, &judge);
     host.browsers.provider = Some(Arc::new(Wary));
     let (id, send) = composed(&host, &site, engine, "Any time after 2pm works").await;
-    let (clicked, _) = host
+    let (clicked, first) = host
         .agent("do", &id, act(&format!("click {send}")), None)
         .await;
+    let done = first["gate"]["already_done"].as_u64().unwrap();
     let failure = clicked.unwrap_err();
     assert_eq!(failure.code, "confirm_needed", "{failure:?}");
     let confirmation = failure.details["stop"]["confirmation"]["id"]
@@ -1498,12 +1499,13 @@ async fn a_confirmed_send_carries_on_its_allowed_plan(engine: &str) {
             .contains("sent: Any time after 2pm works")
     );
     assert!(audit["gate"].get("entry").is_none(), "{audit:?}");
-    // Another send on the same ask: allowed, and paused again.
+    // Another send on the same ask: allowed, and paused again. Only the
+    // first send's plan was recorded since, not its confirmation.
     let (again, audit) = host
         .agent("do", &id, act(&format!("click {send}")), None)
         .await;
     assert_eq!(again.unwrap_err().code, "confirm_needed");
-    assert_eq!(audit["gate"]["already_done"], 1, "{audit:?}");
+    assert_eq!(audit["gate"]["already_done"], done + 1, "{audit:?}");
     host.look("close", &id, json!({})).await;
 }
 
