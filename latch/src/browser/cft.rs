@@ -93,7 +93,8 @@ struct Placement {
 
 /// A session's browser.
 pub struct Cft {
-    child: Child,
+    /// The browser process, when this worker started it.
+    child: Option<Child>,
     cdp: Cdp,
     share: Share,
     remotes: HashMap<String, Remote>,
@@ -159,7 +160,24 @@ impl Cft {
         )?;
         // Only Chrome holds its ends now, so its exit closes the pipe.
         drop((chrome_reads, chrome_writes));
-        let mut browser = Cft {
+        let browser = Cft::new(Some(child), cdp, scratch);
+        browser.open(|browser| browser.new_window(browser.by(COMMAND)))
+    }
+
+    /// Attaches to one tab in a browser the owner is already running.
+    pub fn attach(port: u16, target: &str, scratch: &Path) -> Result<Self, Failure> {
+        let Pipes {
+            chrome_reads,
+            chrome_writes,
+            mut cdp,
+        } = cdp::pipes().map_err(io_failure)?;
+        cdp.scope_to(target);
+        super::cdp_bridge::start(port, chrome_reads, chrome_writes).map_err(io_failure)?;
+        Cft::new(None, cdp, scratch).open(|_| Ok(target.into()))
+    }
+
+    fn new(child: Option<Child>, cdp: Cdp, scratch: &Path) -> Self {
+        Cft {
             child,
             cdp,
             share: Share {
@@ -179,32 +197,43 @@ impl Cft {
             scratch: scratch.to_path_buf(),
             deadline: None,
             pausing: false,
-        };
-        let opened = browser.listen().and_then(|()| {
-            let target = browser.new_window(browser.by(COMMAND))?;
-            browser.adopt(&target, None)
+        }
+    }
+
+    /// Listens, then adopts the tab `first` names as the session's first.
+    fn open(
+        mut self,
+        first: impl FnOnce(&mut Self) -> Result<String, Failure>,
+    ) -> Result<Self, Failure> {
+        let opened = self.listen().and_then(|()| {
+            let target = first(&mut self)?;
+            self.adopt(&target, None)
         });
         match opened {
             Ok(tab) => {
-                browser.share.active = tab;
-                Ok(browser)
+                self.share.active = tab;
+                Ok(self)
             }
             Err(failure) => {
-                browser.close();
+                self.close();
                 Err(failure)
             }
         }
     }
 
-    pub fn pid(&self) -> u32 {
-        self.child.id()
+    pub fn pid(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
     }
 
     /// From now on hears about every new tab and every download. Chrome
     /// starts with no window (`--no-startup-window`); the session opens its
     /// own, behind every other window. Every download lands
-    /// in the staging folder under its own guid, never opened.
+    /// in the staging folder under its own guid, never opened. For an
+    /// attached browser, all setup is on the tab itself (`adopt`).
     fn listen(&mut self) -> Result<(), Failure> {
+        if self.cdp.scoped {
+            return Ok(());
+        }
         let deadline = Instant::now() + STARTUP;
         self.cdp.call(
             "Target.setDiscoverTargets",
@@ -242,7 +271,7 @@ impl Cft {
     /// web otherwise.
     fn pause_for_guards(&mut self) -> Result<(), Failure> {
         let guarding = !self.cdp.guards.is_empty();
-        if guarding != self.pausing {
+        if !self.cdp.scoped && guarding != self.pausing {
             let deadline = self.by(COMMAND);
             self.cdp
                 .call("Fetch.enable", fetch_patterns(guarding), None, deadline)?;
@@ -423,6 +452,23 @@ impl Cft {
             .call("Page.enable", json!({}), Some(&session), deadline)?;
         self.cdp
             .call("Network.enable", json!({}), Some(&session), deadline)?;
+        // No proxy stands between an attached browser and the network: every
+        // request of the tab is paused for `cdp` to check, as are its
+        // frames' and workers' (`Cdp::queue`), which wait to start for it.
+        if self.cdp.scoped {
+            self.cdp.call(
+                "Network.setBypassServiceWorker",
+                json!({"bypass": true}),
+                Some(&session),
+                deadline,
+            )?;
+            self.cdp.call(
+                "Fetch.enable",
+                cdp::intercept_all(),
+                Some(&session),
+                deadline,
+            )?;
+        }
         if !self.auto_attach(&session)? {
             return Err(Failure::new(
                 code::engine_error,
@@ -444,9 +490,14 @@ impl Cft {
     /// Has Chrome attach the frames that `session`'s page runs in other
     /// processes. False when the session went away first.
     fn auto_attach(&mut self, session: &str) -> Result<bool, Failure> {
+        let params = if self.cdp.scoped {
+            cdp::scoped_auto_attach()
+        } else {
+            json!({"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true})
+        };
         let reply = self.session_call(
             "Target.setAutoAttach",
-            json!({"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true}),
+            params,
             session,
             self.by(COMMAND),
             |_| false,
@@ -566,6 +617,9 @@ impl Cft {
                 "Target.detachedFromTarget" => {
                     if let Some(session) = params["sessionId"].as_str() {
                         self.remotes.remove(session);
+                        if self.cdp.scoped {
+                            self.share.tabs.retain(|tab| tab.session != session);
+                        }
                     }
                 }
                 "Target.targetCreated" if params["targetInfo"]["type"] == "page" => {
@@ -719,6 +773,14 @@ impl Cft {
                 url,
                 opener: opener_tab,
             });
+        }
+        // The owner closed an attached session's only tab: nothing of it is
+        // left to drive.
+        if self.cdp.scoped && self.share.tabs.is_empty() {
+            return Err(Failure::new(
+                code::browser_gone,
+                "the session's tab was closed in terminal-browser".into(),
+            ));
         }
         Ok(events)
     }
@@ -1062,6 +1124,12 @@ impl Driver for Cft {
         self.deadline = deadline;
     }
     fn guard(&mut self, values: &[String]) -> Result<(), Failure> {
+        if self.cdp.scoped && !values.is_empty() {
+            return Err(Failure::new(
+                code::fill_refused,
+                "terminal-browser cannot protect vault secrets in popups. Use Chrome or Camoufox for this fill".into(),
+            ));
+        }
         self.cdp.guards = values.to_vec();
         self.pause_for_guards()
     }
@@ -1093,6 +1161,15 @@ impl Driver for Cft {
     }
 
     fn new_tab(&mut self, url: Option<&str>) -> Result<String, Failure> {
+        if self.cdp.scoped {
+            let mut failure = Failure::new(
+                code::unsupported_capability,
+                "a terminal-browser session has one tab: open another session for another page"
+                    .into(),
+            );
+            failure.details = json!({"capability": "tabs"});
+            return Err(failure);
+        }
         let target = self.new_window(self.by(COMMAND))?;
         let tab = self.adopt(&target, None)?;
         self.share.active = tab.clone();
@@ -1565,7 +1642,11 @@ impl Driver for Cft {
     }
 
     fn capabilities(&self) -> Vec<String> {
-        CFT.capabilities.clone()
+        let mut capabilities = CFT.capabilities.clone();
+        if self.cdp.scoped {
+            capabilities.retain(|capability| capability != "downloads");
+        }
+        capabilities
     }
 
     /// The page as the engine draws it, and how its pixels map to the
@@ -1612,23 +1693,26 @@ impl Driver for Cft {
         Ok((meta, png))
     }
 
-    /// Asks Chrome to close, waits for it, then kills whatever is left of
-    /// its process group and waits until the group is empty.
+    /// Ends the Chrome process and its group. With a shared browser the
+    /// worker's exit disconnects the relay and the host closes the tab.
     fn close(&mut self) -> Value {
+        let Some(mut child) = self.child.take() else {
+            return json!({"closed": true, "forced": false});
+        };
         let deadline = Instant::now() + CLOSING;
         let _ = self.cdp.call("Browser.close", json!({}), None, deadline);
         let mut forced = false;
-        while self.child.try_wait().ok().flatten().is_none() {
+        while child.try_wait().ok().flatten().is_none() {
             if Instant::now() >= deadline {
                 forced = true;
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        let group = self.child.id() as libc::pid_t;
+        let group = child.id() as libc::pid_t;
         // SAFETY: signals only; Chrome leads its own process group.
         unsafe { libc::killpg(group, libc::SIGKILL) };
-        let _ = self.child.wait();
+        let _ = child.wait();
         let gone_by = Instant::now() + CLOSING;
         // A group with no process left answers ESRCH.
         // SAFETY: signal 0 only checks whether the group still exists.

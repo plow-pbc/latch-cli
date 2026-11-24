@@ -162,6 +162,7 @@ fn main() -> ExitCode {
                     args.private_display,
                     args.allow_local_browsing,
                     args.page_isolation_off,
+                    args.cdp_port.zip(args.target.as_deref()),
                 ),
                 Err(failure) => {
                     eprintln!("{}", failure.to_json());

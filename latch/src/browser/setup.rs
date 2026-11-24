@@ -13,6 +13,7 @@ use std::process::Command;
 use serde_json::{Value, json};
 
 use super::engine::{CAMOUFOX, CFT};
+use super::terminal_browser;
 use crate::cli::EngineArg;
 use crate::failure::{Failure, code};
 use crate::state::StateDir;
@@ -58,10 +59,16 @@ pub fn run(state: &StateDir, engine: EngineArg) -> Result<Value, Failure> {
                 .to_string(),
         ));
     }
-    let name = match engine {
-        EngineArg::Cft => "chrome",
-        EngineArg::Camoufox => "camoufox",
-    };
+    if matches!(engine, EngineArg::TerminalBrowser) {
+        return Ok(json!({
+            "engine": terminal_browser::ENGINE,
+            "optional": true,
+            "setup": terminal_browser::INSTALL,
+            "start": "terminal-browser open",
+            "profile": "Uses the owner's own browser profile and logins."
+        }));
+    }
+    let name = engine.name();
     install(state, name)?;
     let (version, folder) = match engine {
         EngineArg::Cft => {
@@ -72,6 +79,7 @@ pub fn run(state: &StateDir, engine: EngineArg) -> Result<Value, Failure> {
             CAMOUFOX.verified(&state.path)?;
             (&CAMOUFOX.version, CAMOUFOX.folder(&state.path))
         }
+        EngineArg::TerminalBrowser => unreachable!("external engine"),
     };
     Ok(json!({"engine": name, "version": version, "folder": folder}))
 }

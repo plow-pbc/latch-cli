@@ -34,13 +34,12 @@ const CONNECT_WITHIN: Duration = Duration::from_secs(10);
 /// The longest request or response head the proxy reads.
 const HEAD_MAX: usize = 64 * 1024;
 
-/// Whether the owner lets this host's browser reach local addresses
-/// (`host.json`'s `allow_local_browsing`); no file means no.
-pub fn local_allowed(state_dir: &Path) -> Result<bool, Failure> {
+/// Reads the owner's browser settings, or an empty value for a new host.
+pub(super) fn host_settings(state_dir: &Path) -> Result<Value, Failure> {
     let path = state_dir.join(SETTINGS);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Value::Null),
         Err(err) => {
             return Err(Failure::new(
                 code::bad_host_settings,
@@ -48,18 +47,25 @@ pub fn local_allowed(state_dir: &Path) -> Result<bool, Failure> {
             ));
         }
     };
-    let settings: Value = serde_json::from_str(&text).map_err(|err| {
+    serde_json::from_str(&text).map_err(|err| {
         Failure::new(
             code::bad_host_settings,
             format!("{}: {err}", path.display()),
         )
-    })?;
-    match &settings["allow_local_browsing"] {
+    })
+}
+
+/// Whether the owner lets the host's pinned engines reach local addresses.
+pub fn local_allowed(state_dir: &Path) -> Result<bool, Failure> {
+    match host_settings(state_dir)?["allow_local_browsing"] {
         Value::Null => Ok(false),
-        Value::Bool(allowed) => Ok(*allowed),
+        Value::Bool(allowed) => Ok(allowed),
         _ => Err(Failure::new(
             code::bad_host_settings,
-            format!("{}: allow_local_browsing is true or false", path.display()),
+            format!(
+                "{}: allow_local_browsing is true or false",
+                state_dir.join(SETTINGS).display()
+            ),
         )),
     }
 }
@@ -75,17 +81,28 @@ pub fn requested(url: &str, local: bool) -> Result<(), Failure> {
     if local {
         return Ok(());
     }
-    let (Some(host), Some(port)) = (parsed.host_str(), parsed.port_or_known_default()) else {
-        return Err(refused(format!("{url} names no host")));
-    };
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    match (host, port).to_socket_addrs() {
-        Ok(addresses) => match addresses.map(|a| a.ip()).find(|ip| !public(*ip)) {
-            Some(ip) => Err(refused(local_address(host, ip))),
-            None => Ok(()),
-        },
-        Err(_) => Ok(()),
+    if let Ok(Some(ip)) = nonpublic(&parsed) {
+        let host = parsed
+            .host_str()
+            .unwrap_or_default()
+            .trim_matches(['[', ']']);
+        return Err(refused(local_address(host, ip)));
     }
+    Ok(())
+}
+
+/// An attached tab has no proxy to recheck a name, so DNS errors are refused.
+pub(super) fn intercepted(url: &str) -> bool {
+    matches!(web(url), Ok(Some(parsed)) if matches!(nonpublic(&parsed), Ok(None)))
+}
+
+fn nonpublic(parsed: &url::Url) -> io::Result<Option<IpAddr>> {
+    let host = parsed.host_str().expect("web URL has a host");
+    let port = parsed.port_or_known_default().expect("web URL has a port");
+    Ok((host.trim_matches(['[', ']']), port)
+        .to_socket_addrs()?
+        .map(|address| address.ip())
+        .find(|ip| !public(*ip)))
 }
 
 /// Refuses an address of any scheme but `http` and `https` (`about:blank`

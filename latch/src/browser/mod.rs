@@ -26,11 +26,14 @@
 //! - `egress.rs`: where the browser may go, and the proxy it goes through.
 //! - `cft.rs`: the Chrome for Testing driver.
 //! - `cdp.rs`: the DevTools protocol over the engine's pipe.
+//! - `terminal_browser.rs`: the owner's terminal-browser, an optional
+//!   engine latch attaches to, through `cdp_bridge.rs`.
 //! - `camoufox.rs`: the Camoufox driver, through the helper in `camoufox/`.
 //! - `tags.rs`: workaround tags for the audit of an agent's `eval`.
 
 pub mod camoufox;
 pub mod cdp;
+mod cdp_bridge;
 pub mod cft;
 pub mod client;
 pub mod core;
@@ -54,6 +57,7 @@ mod shown;
 mod steps;
 pub mod suggest;
 pub mod tags;
+pub mod terminal_browser;
 // Real engines: on macOS always, on Linux only where one is installed.
 #[cfg(all(test, any(target_os = "macos", feature = "linux-browser-tests")))]
 mod tests;

@@ -286,19 +286,18 @@ fixes it.
 
 ## Browsing
 
-- Your sessions on a host share one browser profile per engine: each
-  `open` starts with the cookies and sign-ins your earlier sessions left,
-  and on its first page alone. One session at a time: a second `open`
-  while one is live is `profile_in_use`; open tabs in it instead.
-- A host may have two browsers: Camoufox (`camoufox`, a Firefox) and
-  Chrome (`chrome`, Chrome for Testing). `open` with no `--engine` uses
-  Camoufox if the host has it, and the answer's `engine` says which ran;
-  `open --engine chrome URL` picks the other. A site may silently drop a
-  sign-in or a submit from one and take it from the other.
-- `engine_not_installed`: `details.installed` lists the engines the host
-  has, and `details.default` the one an `open` with no `--engine` uses. If
-  the task can use one of them, `open` again on it; else tell the owner the
-  `details.setup` command.
+- Camoufox and Chrome keep your profile on the host. Each `open` starts
+  with the cookies and sign-ins your earlier sessions left. If a session
+  already uses that profile, `open` returns `profile_in_use`. Open tabs in it.
+- `open` uses the host's default engine, usually Camoufox, then Chrome if
+  Camoufox is unavailable. The answer's `engine` says which ran, and
+  `--engine` chooses one explicitly.
+- Optional `terminal-browser` uses the owner's own browser profile and
+  logins, in one tab per session. Choose it when the owner wants you to work
+  in their browser. The owner installs it separately and opens a pane first.
+  Use Chrome or Camoufox to fill vault secrets.
+- `engine_not_installed` names the setup in `details.setup`. When
+  `details.installed` lists an engine that fits the task, you can open on it.
 - `session_ended`: the host restarted, and the session went with it. Never
   retry it: `open` a new session and carry on from the first page you need.
 - A site that blocks you outright ("Access denied", nothing to click or

@@ -12,8 +12,8 @@ use tokio::fs::File;
 
 use super::plan::{self, Check, Literal, Op, Plan, Step};
 use crate::cli::{
-    ActAction, BrowserArgs, BrowserCommand, DialogAction, DownloadCommand, EngineArg,
-    HandoffAction, TabCommand,
+    ActAction, BrowserArgs, BrowserCommand, DialogAction, DownloadCommand, HandoffAction,
+    TabCommand,
 };
 use crate::dial::{self, ANSWER_MARGIN, ANSWER_WITHIN};
 use crate::failure::{Exit, Failure, code};
@@ -284,10 +284,7 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             if let Some(request) = request.as_object_mut() {
                 request.remove("session");
             }
-            let engine = engine.map(|engine| match engine {
-                EngineArg::Cft => "chrome",
-                EngineArg::Camoufox => "camoufox",
-            });
+            let engine = engine.map(|engine| engine.name());
             set(request, "engine", json!(engine));
             set(request, "task", json!(task));
             set(request, "url", json!(url));

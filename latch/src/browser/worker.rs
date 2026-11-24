@@ -2,7 +2,8 @@
 //! `latch browser-worker --engine E --profile DIR --scratch DIR [--headless]
 //! [--allow-local-browsing]` (hidden from `--help`). It launches engine E
 //! on the session's profile in DIR (`profile.rs`) and drives it, CfT over
-//! the CDP pipe and Camoufox through its helper.
+//! the CDP pipe and Camoufox through its helper. For terminal-browser the
+//! worker attaches to the tab its host opened via loopback DevTools.
 //!
 //! On macOS it is not inside latch's Seatbelt: a Seatbelt-confined process
 //! can only re-apply its own profile, and every Chrome or Firefox helper
@@ -123,7 +124,9 @@ fn confine(state_dir: &Path, engine: &str, profile: &Path, scratch: &Path) -> Re
         profile: profile.canonicalize().map_err(cft::io_failure)?,
         plugin: match engine {
             "camoufox" => CAMOUFOX.folder(&state_dir),
-            _ => CFT.folder(&state_dir),
+            "cft" => CFT.folder(&state_dir),
+            // No plugin: a folder that is never there.
+            _ => scratch.join("no-plugin"),
         },
         scratch: scratch.canonicalize().map_err(cft::io_failure)?,
         state_dir,
@@ -143,6 +146,7 @@ pub fn run(
     private_display: bool,
     local: bool,
     page_isolation_off: bool,
+    attach: Option<(u16, &str)>,
 ) -> ExitCode {
     #[cfg(target_os = "linux")]
     if let Err(failure) = confine(state_dir, engine, profile, scratch) {
@@ -168,24 +172,20 @@ pub fn run(
         None
     };
     let display = private.as_ref();
-    // The engine reaches the network only through this proxy.
-    let proxy = match egress::Proxy::start(local) {
-        Ok(proxy) => proxy.url(),
-        Err(err) => {
-            let failure = cft::io_failure(err);
-            answer(&mut io::stdout().lock(), Response::error(&failure), None);
-            return ExitCode::FAILURE;
-        }
-    };
     // The engine runs from its scratch folder, so every path it gets is absolute.
     let absolute = |path: &Path| path.canonicalize().map_err(cft::io_failure);
     let launched = absolute(state_dir).and_then(|state_dir| {
         let scratch = absolute(scratch)?;
         let profile = absolute(profile)?;
+        let proxy = || {
+            egress::Proxy::start(local)
+                .map(|proxy| proxy.url())
+                .map_err(cft::io_failure)
+        };
         Ok(match engine {
             "camoufox" => {
                 let browser =
-                    Camoufox::launch(&state_dir, &profile, &scratch, headless, display, &proxy)?;
+                    Camoufox::launch(&state_dir, &profile, &scratch, headless, display, &proxy()?)?;
                 let ready = json!({
                     "engine": CAMOUFOX.engine,
                     "version": CAMOUFOX.version,
@@ -202,12 +202,29 @@ pub fn run(
                     &scratch,
                     headless,
                     display,
-                    &proxy,
+                    &proxy()?,
                     page_isolation_off,
                 )?;
                 let ready = json!({
                     "engine": CFT.engine,
                     "version": CFT.version,
+                    "driver_contract": CFT.driver_contract,
+                    "pid": browser.pid(),
+                    "groups": engine_groups(),
+                });
+                serve(ready, browser, idle, call_limit, local)
+            }
+            super::terminal_browser::ENGINE => {
+                let Some((port, target)) = attach else {
+                    return Err(Failure::new(
+                        code::bad_engine,
+                        "terminal-browser needs the tab to drive".into(),
+                    ));
+                };
+                let browser = Cft::attach(port, target, &scratch)?;
+                let ready = json!({
+                    "engine": super::terminal_browser::ENGINE,
+                    "version": null,
                     "driver_contract": CFT.driver_contract,
                     "pid": browser.pid(),
                     "groups": engine_groups(),

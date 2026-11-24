@@ -4,7 +4,7 @@ Every crate `latch` depends on directly, and why. The usage numbers are from
 the library audit (crates.io and GitHub APIs, pulled 2026-10-14). `rand` is not in
 the audit; its row was pulled from the same APIs on 2026-10-15, and the vault's six
 (`aes-gcm` to `zip`, named in the browser spec) on 2026-10-19, `qrcode` on 2026-10-19, and the two `tracing` crates on 2026-10-21, `minisign-verify` and `minisign` on 2026-10-22, `unicode-width` on 2026-10-23. Downloads
-are all-time / last 90 days. The bar for a new crate: widely used, actively
+are all-time / last 90 days. The two WebSocket rows were pulled on 2026-11-24. The bar for a new crate: widely used, actively
 maintained, from a known owner. Add a row here in the same change that adds a
 crate to `Cargo.toml`. `cargo deny --locked check` holds the whole locked graph
 to `deny.toml`: no published advisory, only the listed licenses, crates.io
@@ -20,6 +20,8 @@ only. CI runs it on every dependency change and daily.
 | `seccompiler` (Linux only) | Worker seccomp filters after bubblewrap; pinned | 24.3M / 8.1M | 131 (rust-vmm monorepo) | rust-vmm org | 0.5.0 (2025-03-07) | Apache-2.0/BSD-3 |
 | `rand` | Heartbeat jitter and backoff; random ids, keys and nonces | 1,909M / 512M | 2.1k | rust-random org | 0.10.3 (2026-09-20) | MIT/Apache-2.0 |
 | `reqwest` (json, rustls) | HTTPS client for the Plow directory | 801M / 215M | 11.9k | seanmonstar | 0.13.5 (2026-09-08) | MIT/Apache-2.0 |
+| `futures-util` (sink) | Send and receive DevTools WebSocket messages. Already in the lockfile through iroh | 1,185M / 335M | 5.9k (futures-rs) | rust-lang org | 0.3.34 (2026-08-11) | MIT/Apache-2.0 |
+| `tokio-websockets` | Loopback DevTools WebSocket. Already in the lockfile through iroh-relay | 22M / 10M | 154 | Gelbpunkt | 0.13.3 (2026-06-25) | MIT |
 | `serde` | Plain structs to and from JSON | 1,531M | 10.9k | serde-rs org | 1.0.229 (2026-07-18) | MIT/Apache-2.0 |
 | `serde_json` | The JSON format for serde | 1,434M | 5.7k | serde-rs org | 1.0.154 (2026-10-11) | MIT/Apache-2.0 |
 | `sha2` | sha256 for the audit log's hash chain | 1,062M / 302M | 2.3k | RustCrypto org | 0.11.1 (2026-10-12) | MIT/Apache-2.0 |

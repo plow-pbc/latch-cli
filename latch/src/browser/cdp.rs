@@ -92,6 +92,24 @@ pub struct Cdp {
     /// last asked.
     pub guards: Vec<String>,
     pub stopped: bool,
+    /// The app's own browser has no latch proxy. Check the requests of
+    /// the attached tab and its descendants before allowing them.
+    pub(super) scoped: bool,
+}
+
+/// Attach only descendants private to this tab. Shared and service
+/// workers and other pages can belong to the owner's other tabs.
+pub(super) fn scoped_auto_attach() -> Value {
+    json!({
+        "autoAttach": true,
+        "waitForDebuggerOnStart": true,
+        "flatten": true,
+        "filter": [{"type": "iframe"}, {"type": "worker"}, {"exclude": true}]
+    })
+}
+
+pub(super) fn intercept_all() -> Value {
+    json!({"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
 }
 
 /// The two pipes for one Chrome: the ends Chrome gets (to become its fd 3
@@ -121,6 +139,7 @@ pub fn pipes() -> io::Result<Pipes> {
             closed: false,
             guards: Vec::new(),
             stopped: false,
+            scoped: false,
         },
     })
 }
@@ -144,6 +163,11 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 }
 
 impl Cdp {
+    pub(super) fn scope_to(&mut self, target: &str) {
+        self.scoped = true;
+        self.pages.insert(target.into());
+    }
+
     /// Sends one command and waits for its reply until `deadline`.
     /// `session` addresses a page attached with `flatten`.
     pub fn call(
@@ -289,7 +313,7 @@ impl Cdp {
             // WebAuthn environment, which holds no authenticator, and its
             // documents refuse them first (`NO_PASSKEYS`): an authenticator
             // would enroll a passkey the site keeps and this browser loses.
-            "Target.attachedToTarget" if params["targetInfo"]["type"] == "page" => {
+            "Target.attachedToTarget" if !self.scoped && params["targetInfo"]["type"] == "page" => {
                 let page = params["sessionId"].as_str();
                 let _ = self.send("WebAuthn.enable", json!({}), page);
                 let script = json!({"source": NO_PASSKEYS, "runImmediately": true});
@@ -297,7 +321,18 @@ impl Cdp {
                 let _ = self.send("Runtime.runIfWaitingForDebugger", json!({}), page);
                 false
             }
-            "Target.attachedToTarget" => params["targetInfo"]["type"] == "iframe",
+            "Target.attachedToTarget" => {
+                if self.scoped
+                    && event["sessionId"].is_string()
+                    && let Some(child) = params["sessionId"].as_str()
+                {
+                    let child = Some(child);
+                    let _ = self.send("Fetch.enable", intercept_all(), child);
+                    let _ = self.send("Target.setAutoAttach", scoped_auto_attach(), child);
+                    let _ = self.send("Runtime.runIfWaitingForDebugger", json!({}), child);
+                }
+                params["targetInfo"]["type"] == "iframe"
+            }
             "Target.detachedFromTarget" => {
                 let session = text("sessionId");
                 let attached = self.events.iter().position(|queued| {
@@ -349,7 +384,8 @@ impl Cdp {
             "Fetch.requestPaused" => {
                 let request = &params["request"];
                 let url = request["url"].as_str().unwrap_or_default();
-                let web = url.starts_with("http://") || url.starts_with("https://");
+                let web = (url.starts_with("http://") || url.starts_with("https://"))
+                    && (!self.scoped || super::egress::intercepted(url));
                 let carries = request["method"] == "GET" && carries(url, &self.guards);
                 let session = event["sessionId"].as_str();
                 if web && !carries {
@@ -631,6 +667,18 @@ mod tests {
         let stopped = cdp.reply_or(id, "Page.reload", deadline, dialog).unwrap();
         assert!(stopped.is_none());
         assert_eq!(cdp.take_events().len(), 1);
+    }
+
+    #[test]
+    fn scoped_cdp_keeps_the_owned_pages_load_events() {
+        let Pipes { mut cdp, .. } = pipes().unwrap();
+        cdp.scope_to("latch-target");
+        for frame in ["latch-target", "owner-target"] {
+            cdp.queue(json!({"method":"Page.frameStartedLoading", "params":{"frameId":frame}}));
+        }
+        let events = cdp.take_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["params"]["frameId"], "latch-target");
     }
 
     #[test]

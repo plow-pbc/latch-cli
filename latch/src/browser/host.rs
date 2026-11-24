@@ -24,7 +24,7 @@
 //! judged plan's typed values are in the record as written.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -32,13 +32,14 @@ use std::time::{Duration, Instant};
 use crate::transport::{RecvStream, SendStream};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 
 use super::judged;
 use super::plan::Op;
 use super::runtime::Runtime;
 use super::session::Session;
 use super::tags;
+use super::terminal_browser;
 use crate::audit::Timings;
 use crate::failure::{Failure, code};
 use crate::gate::Gate;
@@ -350,8 +351,12 @@ impl Browsers {
         let entry = sessions.get(id)?.clone();
         if !entry.runtime.alive() {
             sessions.remove(id);
-            entry.free_profile();
-            super::opened::forget(&self.state_dir, &entry.hash);
+            if entry.runtime.ready["engine"] == terminal_browser::ENGINE {
+                self.end(entry);
+            } else {
+                entry.free_profile();
+                super::opened::forget(&self.state_dir, &entry.hash);
+            }
             return None;
         }
         Some(entry)
@@ -407,28 +412,34 @@ impl Browsers {
     ) -> Result<(String, Arc<Entry>), Failure> {
         // A session that idled out leaves its profile now, not at the sweep.
         self.sweep().await;
-        // Made only once the engine checks out (`start`).
-        let profile = super::profile::of(&self.state_dir, principal, engine)?;
-        if !self
-            .in_use
-            .lock()
-            .expect("in use lock")
-            .insert(profile.clone())
-        {
-            return Err(profile_in_use(engine));
-        }
-        let in_use = InUse {
-            set: self.in_use.clone(),
-            profile,
+        let in_use = if engine == terminal_browser::ENGINE {
+            None
+        } else {
+            // Made only once the engine checks out (`start`).
+            let profile = super::profile::of(&self.state_dir, principal, engine)?;
+            if !self
+                .in_use
+                .lock()
+                .expect("in use lock")
+                .insert(profile.clone())
+            {
+                return Err(profile_in_use(engine));
+            }
+            Some(InUse {
+                set: self.in_use.clone(),
+                profile,
+            })
         };
         let launching = Instant::now();
-        let started = self.start(engine, &in_use.profile).await;
+        let started = self
+            .start(engine, in_use.as_ref().map(|lease| lease.profile.as_path()))
+            .await;
         add_time(|phases| &mut phases.launch_ms, launching.elapsed());
         let runtime = Arc::new(started?);
         let session = Session::new(runtime.clone());
         let id = format!("s{}", letters(&rand::random::<[u8; 16]>()));
         if let Err(failure) = super::opened::record(&self.state_dir, &hash_of(&id), caller) {
-            let _ = tokio::time::timeout(CLOSING, runtime.close()).await;
+            let _ = close_runtime(&runtime).await;
             return Err(failure);
         }
         let entry = Arc::new(Entry {
@@ -445,33 +456,36 @@ impl Browsers {
             judged_sites: Default::default(),
             checkout: Default::default(),
             masks: Default::default(),
-            profile: std::sync::Mutex::new(Some(in_use)),
+            profile: std::sync::Mutex::new(in_use),
         });
         self.sessions.lock().await.insert(id.clone(), entry.clone());
         Ok((id, entry))
     }
 
-    async fn start(&self, engine: &str, profile: &std::path::Path) -> Result<Runtime, Failure> {
-        // Checked here first, outside the worker's sandbox, so that a full
-        // hash leaves its receipt and the worker's own check is quick.
-        let (state_dir, name) = (self.state_dir.clone(), engine.to_string());
-        tokio::task::spawn_blocking(move || super::engine::verify(&state_dir, &name))
-            .await
-            .expect("the engine check does not panic")?;
-        let profile = &super::profile::make(profile.to_path_buf())?;
+    async fn start(&self, engine: &str, profile: Option<&Path>) -> Result<Runtime, Failure> {
+        let profile = if let Some(profile) = profile {
+            // Check outside the worker's sandbox so it can reuse the receipt.
+            let (state_dir, name) = (self.state_dir.clone(), engine.to_string());
+            tokio::task::spawn_blocking(move || super::engine::verify(&state_dir, &name))
+                .await
+                .expect("the engine check does not panic")?;
+            Some(super::profile::make(profile.to_path_buf())?)
+        } else {
+            None
+        };
         #[cfg(test)]
         if let Some((latch, _)) = &self.test {
             return Runtime::start_with(
                 latch,
                 &self.state_dir,
                 engine,
-                profile,
+                profile.as_deref(),
                 self.idle.unwrap_or(super::runtime::IDLE),
                 self.headless,
             )
             .await;
         }
-        Runtime::start(&self.state_dir, engine, profile, self.headless).await
+        Runtime::start(&self.state_dir, engine, profile.as_deref(), self.headless).await
     }
 
     /// Forgets the sessions whose runtime ended or that sat idle too long.
@@ -541,7 +555,7 @@ impl Browsers {
             }
             sessions.remove(id).expect("found above")
         };
-        Ok(self.end(entry))
+        self.close_session(entry).await
     }
 
     /// Ends the session whose id hashes to `hash`, whoever opened it: how
@@ -562,7 +576,7 @@ impl Browsers {
         };
         entry.note(audit);
         audit.insert("by_owner_device".into(), json!(true));
-        Some(Ok(self.end(entry)))
+        Some(self.close_session(entry).await)
     }
 
     /// Tests only: until every browser closing now has closed.
@@ -572,35 +586,52 @@ impl Browsers {
         closing.join_all().await;
     }
 
-    /// A session the map no longer has, ended while the host runs: its
-    /// record goes, and its browser closes (`close_browser`).
-    fn end(&self, entry: Arc<Entry>) -> Value {
+    /// A terminal-browser close reports whether its tab actually closed.
+    /// Pinned engines keep their immediate response.
+    async fn close_session(&self, entry: Arc<Entry>) -> Result<Value, Failure> {
+        let attached = entry.runtime.ready["engine"] == terminal_browser::ENGINE;
+        let closed = self.end(entry);
+        if attached {
+            closed.await.map_err(|_| {
+                Failure::new(
+                    code::engine_failed,
+                    "terminal-browser tab cleanup stopped".into(),
+                )
+            })??;
+        }
+        Ok(json!({"closed": true}))
+    }
+
+    fn end(&self, entry: Arc<Entry>) -> oneshot::Receiver<Result<(), Failure>> {
         super::opened::forget(&self.state_dir, &entry.hash);
         self.close_browser(entry)
     }
 
-    /// A session the map no longer has: its browser closes once every
-    /// request under way in it has answered (a `wait` or a plan, not only
-    /// the worker call in flight), and its profile is free again. Neither
-    /// waits: the answer is at once.
-    fn close_browser(&self, entry: Arc<Entry>) -> Value {
+    /// Close once every request underway has answered and release the
+    /// profile. The host waits on these tasks when it stops.
+    fn close_browser(&self, entry: Arc<Entry>) -> oneshot::Receiver<Result<(), Failure>> {
+        let (done, closed) = oneshot::channel();
         let mut closing = self.closing.lock().expect("closing lock");
         while closing.try_join_next().is_some() {}
         closing.spawn(async move {
             let _all = entry.calls.write().await;
             let _turn = entry.session.lock().await;
-            // A browser that did not close is stopped, every process of it
-            // gone: never two on a profile.
-            if !matches!(
-                tokio::time::timeout(CLOSING, entry.runtime.close()).await,
-                Ok(Ok(_))
-            ) {
-                entry.runtime.stop().await;
-            }
+            let result = close_runtime(&entry.runtime).await;
             entry.free_profile();
+            let _ = done.send(result);
         });
-        json!({"closed": true})
+        closed
     }
+}
+
+async fn close_runtime(runtime: &Runtime) -> Result<(), Failure> {
+    if !matches!(
+        tokio::time::timeout(CLOSING, runtime.close()).await,
+        Ok(Ok(_))
+    ) {
+        runtime.stop().await;
+    }
+    runtime.release_tab().await
 }
 
 /// `browser`: one `latch browser` command, and the time it spent in each
@@ -968,7 +999,7 @@ async fn open(
         Some(super::engine::unnamed(name).ok_or_else(|| {
             Failure::new(
                 code::bad_arguments,
-                format!("no browser engine {name:?}: use chrome or camoufox"),
+                format!("no browser engine {name:?}: use chrome, camoufox or terminal-browser"),
             )
         })?)
     };

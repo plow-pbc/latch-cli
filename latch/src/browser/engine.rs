@@ -27,6 +27,7 @@ use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::terminal_browser;
 use crate::failure::{Failure, code};
 use crate::state::to_hex;
 
@@ -277,11 +278,15 @@ fn with_installed(state_dir: &Path, mut failure: Failure) -> Failure {
         return failure;
     }
     let installed = installed(state_dir);
-    let default = installed.first().copied();
-    // The engine asked for is missing, so the host has the other one at most.
-    let has = match default {
+    let default = configured(state_dir)
+        .ok()
+        .flatten()
+        .map(named)
+        .or_else(|| installed.first().copied());
+    let has = match installed.first() {
         None => "this host has no browser engine installed".to_string(),
-        Some(only) => format!("this host has {only}, its default"),
+        Some(&only) if default == Some(only) => format!("this host has {only}, its default"),
+        Some(only) => format!("this host has {only}"),
     };
     failure.message = format!("{}; {has}", failure.message);
     failure.details["installed"] = serde_json::json!(installed);
@@ -289,11 +294,28 @@ fn with_installed(state_dir: &Path, mut failure: Failure) -> Failure {
     failure
 }
 
-/// The engine an `open` that names none runs on: Camoufox when its build
-/// checks out, else Chrome when its does. With neither, the first one's
-/// error that is not just "not installed" (a changed build, or no build for
-/// this platform); with none installed, one naming the owner's setup.
+fn configured(state_dir: &Path) -> Result<Option<&'static str>, Failure> {
+    let settings = super::egress::host_settings(state_dir)?;
+    if settings["browser_engine"].is_null() {
+        return Ok(None);
+    }
+    settings["browser_engine"]
+        .as_str()
+        .and_then(unnamed)
+        .map(Some)
+        .ok_or_else(|| {
+            Failure::new(
+                code::bad_host_settings,
+                "host.json: browser_engine must be chrome, camoufox or terminal-browser".into(),
+            )
+        })
+}
+
+/// The owner's choice, or Camoufox when its build checks out, then Chrome.
 pub fn default(state_dir: &Path) -> Result<&'static str, Failure> {
+    if let Some(engine) = configured(state_dir)? {
+        return Ok(engine);
+    }
     let fox = match CAMOUFOX.verified(state_dir) {
         Ok(_) => return Ok("camoufox"),
         Err(failure) => failure,
@@ -329,6 +351,7 @@ pub fn unnamed(name: &str) -> Option<&'static str> {
     match name {
         "chrome" => Some("cft"),
         "camoufox" => Some("camoufox"),
+        terminal_browser::ENGINE => Some(terminal_browser::ENGINE),
         _ => None,
     }
 }

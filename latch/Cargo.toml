@@ -33,6 +33,9 @@ libc = "0.2.190"
 rand = "0.10.3"
 # HTTP client for Plow's directory, over rustls (no OpenSSL) so Linux builds stay static.
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+# The optional terminal-browser engine uses a loopback DevTools WebSocket.
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+tokio-websockets = { version = "0.13", features = ["client", "getrandom", "rand", "sha1_smol"] }
 # Turns our plain structs into JSON and back (Plow's API, our output, config.json).
 serde = { version = "1.0.229", features = ["derive"] }
 # `raw_value`: a decision request's state is sent as written, its keys in

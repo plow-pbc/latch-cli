@@ -277,6 +277,7 @@ codes! {
     engine_error: Failed,
     engine_failed: Failed,
     engine_not_installed: Failed,
+    engine_not_running: Failed,
     engine_unverified: Denied,
     eval_failed: Failed,
     exec_denied: Denied,
