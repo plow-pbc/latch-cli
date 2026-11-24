@@ -93,7 +93,11 @@ struct Placement {
 
 /// A session's browser.
 pub struct Cft {
+    /// Chrome, or the bridge to a browser latch did not start.
     child: Child,
+    /// Driving one tab of a browser latch did not start (`attach`): only
+    /// that tab's own CDP state is set, never the browser's.
+    attached: bool,
     cdp: Cdp,
     share: Share,
     remotes: HashMap<String, Remote>,
@@ -159,8 +163,33 @@ impl Cft {
         )?;
         // Only Chrome holds its ends now, so its exit closes the pipe.
         drop((chrome_reads, chrome_writes));
-        let mut browser = Cft {
+        let browser = Cft::new(child, cdp, scratch, false);
+        browser.open(|browser| browser.new_window(browser.by(COMMAND)))
+    }
+
+    /// Drives tab `target` of the browser whose DevTools listen on
+    /// 127.0.0.1:`port`, a browser the owner runs (`terminal_browser`),
+    /// through `latch cdp-bridge`. Only that tab's requests are paused, each
+    /// checked for its destination, and
+    /// closing the session leaves the browser and its other tabs as they are.
+    pub fn attach(port: u16, target: &str, scratch: &Path) -> Result<Self, Failure> {
+        let Pipes {
+            chrome_reads,
+            chrome_writes,
+            mut cdp,
+        } = cdp::pipes().map_err(io_failure)?;
+        cdp.scoped = true;
+        let child = bridge(port, scratch, &chrome_reads, &chrome_writes)?;
+        drop((chrome_reads, chrome_writes));
+        let browser = Cft::new(child, cdp, scratch, true);
+        let target = target.to_string();
+        browser.open(move |_| Ok(target))
+    }
+
+    fn new(child: Child, cdp: Cdp, scratch: &Path, attached: bool) -> Self {
+        Cft {
             child,
+            attached,
             cdp,
             share: Share {
                 tabs: Vec::new(),
@@ -179,18 +208,25 @@ impl Cft {
             scratch: scratch.to_path_buf(),
             deadline: None,
             pausing: false,
-        };
-        let opened = browser.listen().and_then(|()| {
-            let target = browser.new_window(browser.by(COMMAND))?;
-            browser.adopt(&target, None)
+        }
+    }
+
+    /// Listens, then adopts the tab `first` names as the session's first.
+    fn open(
+        mut self,
+        first: impl FnOnce(&mut Self) -> Result<String, Failure>,
+    ) -> Result<Self, Failure> {
+        let opened = self.listen().and_then(|()| {
+            let target = first(&mut self)?;
+            self.adopt(&target, None)
         });
         match opened {
             Ok(tab) => {
-                browser.share.active = tab;
-                Ok(browser)
+                self.share.active = tab;
+                Ok(self)
             }
             Err(failure) => {
-                browser.close();
+                self.close();
                 Err(failure)
             }
         }
@@ -203,8 +239,12 @@ impl Cft {
     /// From now on hears about every new tab and every download. Chrome
     /// starts with no window (`--no-startup-window`); the session opens its
     /// own, behind every other window. Every download lands
-    /// in the staging folder under its own guid, never opened.
+    /// in the staging folder under its own guid, never opened. For an
+    /// attached browser, all setup is on the tab itself (`adopt`).
     fn listen(&mut self) -> Result<(), Failure> {
+        if self.attached {
+            return Ok(());
+        }
         let deadline = Instant::now() + STARTUP;
         self.cdp.call(
             "Target.setDiscoverTargets",
@@ -242,7 +282,8 @@ impl Cft {
     /// web otherwise.
     fn pause_for_guards(&mut self) -> Result<(), Failure> {
         let guarding = !self.cdp.guards.is_empty();
-        if guarding != self.pausing {
+        // An attached tab pauses every request already (`adopt`).
+        if guarding != self.pausing && !self.attached {
             let deadline = self.by(COMMAND);
             self.cdp
                 .call("Fetch.enable", fetch_patterns(guarding), None, deadline)?;
@@ -423,6 +464,23 @@ impl Cft {
             .call("Page.enable", json!({}), Some(&session), deadline)?;
         self.cdp
             .call("Network.enable", json!({}), Some(&session), deadline)?;
+        // No proxy stands between an attached browser and the network: every
+        // request of the tab is paused for `cdp` to check, as are its
+        // frames' and workers' (`Cdp::queue`), which wait to start for it.
+        if self.attached {
+            self.cdp.call(
+                "Network.setBypassServiceWorker",
+                json!({"bypass": true}),
+                Some(&session),
+                deadline,
+            )?;
+            self.cdp.call(
+                "Fetch.enable",
+                cdp::intercept_all(),
+                Some(&session),
+                deadline,
+            )?;
+        }
         if !self.auto_attach(&session)? {
             return Err(Failure::new(
                 code::engine_error,
@@ -444,9 +502,14 @@ impl Cft {
     /// Has Chrome attach the frames that `session`'s page runs in other
     /// processes. False when the session went away first.
     fn auto_attach(&mut self, session: &str) -> Result<bool, Failure> {
+        let params = if self.attached {
+            cdp::scoped_auto_attach()
+        } else {
+            json!({"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true})
+        };
         let reply = self.session_call(
             "Target.setAutoAttach",
-            json!({"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true}),
+            params,
             session,
             self.by(COMMAND),
             |_| false,
@@ -566,13 +629,21 @@ impl Cft {
                 "Target.detachedFromTarget" => {
                     if let Some(session) = params["sessionId"].as_str() {
                         self.remotes.remove(session);
+                        if self.attached {
+                            self.share.tabs.retain(|tab| tab.session != session);
+                        }
                     }
                 }
                 "Target.targetCreated" if params["targetInfo"]["type"] == "page" => {
                     let target = params["targetInfo"]["targetId"]
                         .as_str()
                         .unwrap_or_default();
-                    if !self.has_target(target) && !self.unassigned.iter().any(|(t, _)| t == target)
+                    // An attached browser's other pages are the owner's, a
+                    // popup of the session's tab among them: it could not be
+                    // paused before its first request.
+                    if !self.attached
+                        && !self.has_target(target)
+                        && !self.unassigned.iter().any(|(t, _)| t == target)
                     {
                         let opener = params["targetInfo"]["openerId"]
                             .as_str()
@@ -719,6 +790,14 @@ impl Cft {
                 url,
                 opener: opener_tab,
             });
+        }
+        // The owner closed an attached session's only tab: nothing of it is
+        // left to drive.
+        if self.attached && self.share.tabs.is_empty() {
+            return Err(Failure::new(
+                code::browser_gone,
+                "the session's tab was closed in terminal-browser".into(),
+            ));
         }
         Ok(events)
     }
@@ -1093,6 +1172,15 @@ impl Driver for Cft {
     }
 
     fn new_tab(&mut self, url: Option<&str>) -> Result<String, Failure> {
+        if self.attached {
+            let mut failure = Failure::new(
+                code::unsupported_capability,
+                "a terminal-browser session has one tab: open another session for another page"
+                    .into(),
+            );
+            failure.details = json!({"capability": "tabs"});
+            return Err(failure);
+        }
         let target = self.new_window(self.by(COMMAND))?;
         let tab = self.adopt(&target, None)?;
         self.share.active = tab.clone();
@@ -1565,7 +1653,11 @@ impl Driver for Cft {
     }
 
     fn capabilities(&self) -> Vec<String> {
-        CFT.capabilities.clone()
+        let mut capabilities = CFT.capabilities.clone();
+        if self.attached {
+            capabilities.retain(|capability| capability != "downloads");
+        }
+        capabilities
     }
 
     /// The page as the engine draws it, and how its pixels map to the
@@ -1613,12 +1705,17 @@ impl Driver for Cft {
     }
 
     /// Asks Chrome to close, waits for it, then kills whatever is left of
-    /// its process group and waits until the group is empty.
+    /// its process group and waits until the group is empty. An attached
+    /// browser is not latch's to close: only the bridge goes, and the
+    /// browser drops the bridge's sessions, pauses and all; the host closes
+    /// the tab (`terminal_browser`).
     fn close(&mut self) -> Value {
         let deadline = Instant::now() + CLOSING;
-        let _ = self.cdp.call("Browser.close", json!({}), None, deadline);
+        if !self.attached {
+            let _ = self.cdp.call("Browser.close", json!({}), None, deadline);
+        }
         let mut forced = false;
-        while self.child.try_wait().ok().flatten().is_none() {
+        while !self.attached && self.child.try_wait().ok().flatten().is_none() {
             if Instant::now() >= deadline {
                 forced = true;
                 break;
@@ -1750,6 +1847,57 @@ fn stale() -> Failure {
     )
 }
 
+/// Has `command` start with `reads` as its fd 3 and `writes` as its fd 4.
+fn on_engine_fds(command: &mut Command, reads: i32, writes: i32) {
+    // SAFETY: between fork and exec, only async-signal-safe calls: the two
+    // ends are first copied above fd 4 (so neither is overwritten by the
+    // other's move), then onto 3 and 4, which exec keeps open.
+    unsafe {
+        command.pre_exec(move || {
+            let high_reads = libc::fcntl(reads, libc::F_DUPFD_CLOEXEC, 10);
+            let high_writes = libc::fcntl(writes, libc::F_DUPFD_CLOEXEC, 10);
+            if high_reads < 0
+                || high_writes < 0
+                || libc::dup2(high_reads, 3) < 0
+                || libc::dup2(high_writes, 4) < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+/// Starts `latch cdp-bridge` to the browser on 127.0.0.1:`port`, on the
+/// engine's two descriptors as `start` gives them to Chrome, in a process
+/// group of its own.
+fn bridge(
+    port: u16,
+    scratch: &Path,
+    reads: &impl AsRawFd,
+    writes: &impl AsRawFd,
+) -> Result<Child, Failure> {
+    let log = File::create(scratch.join("engine.log")).map_err(io_failure)?;
+    let latch = std::env::current_exe().map_err(io_failure)?;
+    let mut command = Command::new(latch);
+    command
+        .arg("cdp-bridge")
+        .arg(port.to_string())
+        .env_clear()
+        .env("PATH", PATH)
+        .current_dir(scratch)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(log)
+        .process_group(0);
+    on_engine_fds(&mut command, reads.as_raw_fd(), writes.as_raw_fd());
+    let child = command
+        .spawn()
+        .map_err(|err| Failure::new(code::engine_failed, format!("cdp-bridge: {err}")))?;
+    super::worker::started_group(child.id());
+    Ok(child)
+}
+
 /// Starts the engine on its profile, headed unless `headless`, with the CDP
 /// pipe as its fd 3 (commands in) and fd 4 (replies out), in a process
 /// group of its own.
@@ -1803,23 +1951,7 @@ fn start(
     for (name, value) in display.map(Display::env).into_iter().flatten() {
         command.env(name, value);
     }
-    // SAFETY: between fork and exec, only async-signal-safe calls: the two
-    // ends are first copied above fd 4 (so neither is overwritten by the
-    // other's move), then onto 3 and 4, which exec keeps open.
-    unsafe {
-        command.pre_exec(move || {
-            let high_reads = libc::fcntl(reads, libc::F_DUPFD_CLOEXEC, 10);
-            let high_writes = libc::fcntl(writes, libc::F_DUPFD_CLOEXEC, 10);
-            if high_reads < 0
-                || high_writes < 0
-                || libc::dup2(high_reads, 3) < 0
-                || libc::dup2(high_writes, 4) < 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    on_engine_fds(&mut command, reads, writes);
     let child = command.spawn().map_err(|err| {
         Failure::new(
             code::engine_failed,

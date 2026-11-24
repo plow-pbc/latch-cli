@@ -149,6 +149,7 @@ fn main() -> ExitCode {
             return setup::run(cli.state_dir);
         }
         // A browser worker drives its engine on plain threads, no runtime.
+        Command::CdpBridge { port } => return browser::cdp_bridge::run(port),
         Command::BrowserWorker(args) => {
             return match StateDir::new(cli.state_dir) {
                 Ok(state) => browser::worker::run(
@@ -162,6 +163,7 @@ fn main() -> ExitCode {
                     args.private_display,
                     args.allow_local_browsing,
                     args.page_isolation_off,
+                    args.cdp_port.zip(args.target.as_deref()),
                 ),
                 Err(failure) => {
                     eprintln!("{}", failure.to_json());
@@ -558,6 +560,7 @@ async fn run(
         }
         Command::Worker(_)
         | Command::BrowserWorker(_)
+        | Command::CdpBridge { .. }
         | Command::Help(_)
         | Command::Skill
         | Command::App

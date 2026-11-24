@@ -276,6 +276,10 @@ pub enum Command {
     /// Internal: the process a host starts for each browser session
     #[command(hide = true)]
     BrowserWorker(BrowserWorkerArgs),
+    /// Internal: stands where a browser worker's engine would, relaying its
+    /// pipe to the DevTools of a browser on 127.0.0.1:PORT
+    #[command(hide = true)]
+    CdpBridge { port: u16 },
     /// Internal: removes the helper versions this latch does not run,
     /// unless a host runs on the state folder; the installer runs it
     #[command(hide = true)]
@@ -369,13 +373,15 @@ pub struct BrowserArgs {
 pub enum BrowserCommand {
     /// Start a new browser session and load URL
     ///
-    /// The session runs in a browser of its own, on your browser profile on
-    /// the host: the cookies and logins your earlier sessions left are there.
-    /// It lists the elements on screen and answers the session's id, which
-    /// every later command needs. One session at a time; use its tabs
+    /// Chrome and Camoufox keep a profile for each caller. The optional
+    /// terminal-browser engine uses the owner's own browser profile and logins.
+    /// The answer lists the elements on screen and gives the session ID for
+    /// later calls.
     Open {
-        /// The browser engine the session runs on [default: camoufox if the
-        /// host has it, else chrome]
+        /// The browser engine the session runs on: chrome, camoufox, or
+        /// terminal-browser (the owner's own browser and logins, if the host
+        /// has it running) [default: the host's `browser_engine` in host.json,
+        /// else camoufox if the host has it, else chrome]
         #[arg(long, value_enum)]
         engine: Option<EngineArg>,
         /// A label for the session, shown in listings and the audit
@@ -591,15 +597,16 @@ pub enum BrowserCommand {
     },
     /// Your open sessions, without their ids
     Sessions,
-    /// End the session and close its browser; its cookies and logins stay
+    /// End the session and close its browser or terminal-browser tab
     ///
     /// One of the owner's own machines may name any session by the hash the
     /// host's dashboard shows
     Close,
-    /// Download and verify a browser engine into this machine's state folder
+    /// Install Chrome or Camoufox, or show how to set up terminal-browser
     ///
-    /// Owner only, on the host itself: after `install.sh --no-browser`, say.
-    /// An agent's browser call never downloads one
+    /// Owner only, on the host itself. Get optional terminal-browser separately
+    /// at https://terminal-browser.sh and run `terminal-browser open` in a pane.
+    /// It uses the owner's own browser profile and logins.
     Setup {
         #[arg(long, value_enum, default_value_t = EngineArg::Camoufox)]
         engine: EngineArg,
@@ -613,6 +620,20 @@ pub enum EngineArg {
     Cft,
     /// Camoufox
     Camoufox,
+    /// terminal-browser, the owner's own browser in their terminal, on
+    /// their own profile; optional, from https://terminal-browser.sh
+    #[value(name = "terminal-browser")]
+    TerminalBrowser,
+}
+
+impl EngineArg {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Cft => "chrome",
+            Self::Camoufox => "camoufox",
+            Self::TerminalBrowser => crate::browser::terminal_browser::ENGINE,
+        }
+    }
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq)]
@@ -1014,9 +1035,16 @@ pub enum RulesCommand {
 
 #[derive(Args, Debug)]
 pub struct BrowserWorkerArgs {
-    /// The engine to launch: cft or camoufox
+    /// The engine to launch: cft or camoufox; or terminal-browser, which
+    /// is not launched but attached to (`--cdp-port`, `--target`)
     #[arg(long)]
     pub engine: String,
+    /// terminal-browser: the browser's DevTools port on 127.0.0.1
+    #[arg(long)]
+    pub cdp_port: Option<u16>,
+    /// terminal-browser: the DevTools target of the session's tab
+    #[arg(long)]
+    pub target: Option<String>,
     /// The session's profile folder
     #[arg(long)]
     pub profile: PathBuf,

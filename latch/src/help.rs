@@ -597,7 +597,7 @@ const ENTRIES: &[Entry] = &[
         runs_on: |_| RunsOn::Host,
         output: "The new session's id (shown only now: keep it), its engine, and the elements on screen.",
         effect: Once(
-            "starts a browser session on the host, in a browser of its own on your profile there, and loads the page",
+            "starts a browser session and loads the page. Chrome and Camoufox use your profile on the host. Optional terminal-browser opens one tab on the owner's own profile",
         ),
         owner_only: false,
         connector: None,
@@ -980,7 +980,7 @@ const ENTRIES: &[Entry] = &[
         runs_on: |_| RunsOn::Host,
         output: "The session closed.",
         effect: Repeatable(
-            "ends the session and closes its browser; its cookies and logins stay on your profile",
+            "ends the session and closes its browser, or just its tab on terminal-browser",
         ),
         owner_only: false,
         connector: None,
@@ -992,9 +992,9 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "browser.setup",
         runs_on: |_| RunsOn::Local,
-        output: "The engine installed: its name, version and folder.",
+        output: "For Chrome or Camoufox, the installed engine's name, version and folder. For optional terminal-browser, where to install it separately and how to start it. It uses the owner's own browser profile and logins.",
         effect: Repeatable(
-            "downloads and verifies a browser engine into this machine's state folder",
+            "downloads and verifies Chrome or Camoufox, or prints terminal-browser setup instructions",
         ),
         owner_only: true,
         connector: None,
@@ -1006,6 +1006,10 @@ const ENTRIES: &[Entry] = &[
             ex(
                 "Chrome for Testing",
                 &["browser", "setup", "--engine", "chrome"],
+            ),
+            ex(
+                "See how to set up optional terminal-browser",
+                &["browser", "setup", "--engine", "terminal-browser"],
             ),
         ],
     },

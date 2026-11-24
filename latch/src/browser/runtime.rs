@@ -16,6 +16,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 use super::core::{self, Call};
+use super::terminal_browser::{self, Tab};
 use crate::failure::{Failure, code};
 use crate::wire::Response;
 
@@ -51,6 +52,9 @@ pub struct Runtime {
     within: fn(&Value) -> Duration,
     /// How long the session may go without a call before its worker ends it.
     pub idle: Duration,
+    /// On terminal-browser, the session's tab in the owner's browser,
+    /// until the runtime closes it.
+    tab: std::sync::Mutex<Option<Tab>>,
 }
 
 struct Worker {
@@ -87,7 +91,7 @@ impl Runtime {
     pub async fn start(
         state_dir: &Path,
         engine: &str,
-        profile: &Path,
+        profile: Option<&Path>,
         headless: bool,
     ) -> Result<Self, Failure> {
         let latch = std::env::current_exe()
@@ -95,20 +99,62 @@ impl Runtime {
         Self::start_with(&latch, state_dir, engine, profile, IDLE, headless).await
     }
 
-    /// `start`, with `latch` as the latch binary to run the worker.
+    /// `start`, with `latch` as the latch binary to run the worker. On
+    /// terminal-browser, first a tab for the session in the owner's browser.
     pub async fn start_with(
         latch: &Path,
         state_dir: &Path,
         engine: &str,
-        profile: &Path,
+        profile: Option<&Path>,
         idle: Duration,
         headless: bool,
+    ) -> Result<Self, Failure> {
+        let tab = if engine == terminal_browser::ENGINE {
+            Some(terminal_browser::open(&terminal_browser::program()?).await?)
+        } else {
+            None
+        };
+        let launched = Self::launch(
+            latch,
+            state_dir,
+            engine,
+            profile,
+            idle,
+            headless,
+            tab.as_ref(),
+        )
+        .await;
+        match launched {
+            Ok(mut runtime) => {
+                runtime.tab = std::sync::Mutex::new(tab);
+                Ok(runtime)
+            }
+            Err(mut failure) => {
+                if let Some(tab) = tab
+                    && let Err(close) = tab.close().await
+                {
+                    failure.details["tab_cleanup"] = serde_json::json!(close.message);
+                }
+                Err(failure)
+            }
+        }
+    }
+
+    async fn launch(
+        latch: &Path,
+        state_dir: &Path,
+        engine: &str,
+        profile: Option<&Path>,
+        idle: Duration,
+        headless: bool,
+        tab: Option<&Tab>,
     ) -> Result<Self, Failure> {
         let failed = |err: std::io::Error| Failure::new(code::engine_failed, err.to_string());
         let scratch = tempfile::Builder::new()
             .prefix("latch-browser-")
             .tempdir()
             .map_err(failed)?;
+        let profile = profile.unwrap_or(scratch.path()).to_path_buf();
         let mut command = Command::new(latch);
         command
             .arg("--state-dir")
@@ -117,7 +163,7 @@ impl Runtime {
             .arg("--engine")
             .arg(engine)
             .arg("--profile")
-            .arg(profile)
+            .arg(&profile)
             .arg("--scratch")
             .arg(scratch.path())
             .arg("--idle-timeout")
@@ -125,14 +171,23 @@ impl Runtime {
         if headless {
             command.arg("--headless");
         }
-        if super::egress::local_allowed(state_dir)? {
-            command.arg("--allow-local-browsing");
+        if let Some(tab) = tab {
+            command
+                .arg("--cdp-port")
+                .arg(tab.port.to_string())
+                .arg("--target")
+                .arg(&tab.target);
         }
-        if super::display::for_runtime(headless) {
-            command.arg("--private-display");
-        }
-        if crate::sandbox::page_isolation_off() {
-            command.arg("--page-isolation-off");
+        if tab.is_none() {
+            if super::egress::local_allowed(state_dir)? {
+                command.arg("--allow-local-browsing");
+            }
+            if super::display::for_runtime(headless) {
+                command.arg("--private-display");
+            }
+            if crate::sandbox::page_isolation_off() {
+                command.arg("--page-isolation-off");
+            }
         }
         // The worker dies with this host: on Linux the kernel kills it (and
         // bubblewrap, which it becomes, everything inside); on macOS it
@@ -158,7 +213,7 @@ impl Runtime {
             stdout,
             scratch,
             groups: Vec::new(),
-            profile: profile.to_path_buf(),
+            profile,
         };
         let ready = worker.answer().await?;
         if cfg!(target_os = "macos") {
@@ -171,6 +226,7 @@ impl Runtime {
             pauses: AtomicU32::new(0),
             within,
             idle,
+            tab: std::sync::Mutex::new(None),
         })
     }
 
@@ -269,6 +325,18 @@ impl Runtime {
     pub async fn stop(&self) {
         self.worker.lock().await.stop_and_wait().await;
     }
+
+    /// Closes the session's tab in the owner's terminal-browser, once. A tab
+    /// the browser would not close is the answer, and the host's log says so.
+    pub(super) async fn release_tab(&self) -> Result<(), Failure> {
+        let tab = self.tab.lock().expect("tab lock").take();
+        let Some(tab) = tab else {
+            return Ok(());
+        };
+        tab.close().await.inspect_err(|failure| {
+            crate::log::log(&format!("browser: {}", failure.message));
+        })
+    }
 }
 
 impl Worker {
@@ -358,9 +426,10 @@ mod tests {
         let ready = r#"echo '{"ok": {"pid": 1}}'"#;
         std::fs::write(&worker, format!("#!/bin/sh\n{ready}\n{script}\n")).unwrap();
         std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut runtime = Runtime::start_with(&worker, dir.path(), "cft", dir.path(), IDLE, true)
-            .await
-            .unwrap();
+        let mut runtime =
+            Runtime::start_with(&worker, dir.path(), "cft", Some(dir.path()), IDLE, true)
+                .await
+                .unwrap();
         runtime.within = |_| Duration::from_millis(300);
         (dir, runtime)
     }

@@ -109,6 +109,40 @@ on once, in a new session on the other engine, and a login fill whose
 fields the page kept says so in its answer's `next`. Any other kind's
 `next` says never to submit again: kept fields don't prove it failed.
 
+## terminal-browser (optional)
+
+Install [terminal-browser](https://terminal-browser.sh) separately on the
+host and run `terminal-browser open` in a terminal pane. Use
+`latch browser setup --engine terminal-browser` to see the setup
+instructions. The host finds the CLI on the owner's login PATH, or uses the
+executable named in its `LATCH_TERMINAL_BROWSER` environment variable.
+
+```sh
+latch browser --host my-mac open --engine terminal-browser https://example.com/
+```
+
+Each session opens one tab in the most recently started terminal-browser
+pane. It uses the **owner's own browser profile**, including their cookies,
+logins and site data. Choose it only for agents you trust with those sessions.
+The usual gatekeeper checks apply. `close` waits for terminal-browser to
+close the session's tab. For another page in a separate tab, open another
+session. Downloads follow terminal-browser's settings and are unavailable
+through `latch browser downloads` and `download get`.
+
+The owner can set `{"browser_engine": "terminal-browser"}` in the host's
+`host.json` to choose it whenever `open` omits `--engine`. The setting
+also accepts `camoufox` or `chrome`. Without it, Camoufox remains the
+first choice and Chrome the second. An explicit `--engine` takes precedence.
+
+Latch intercepts requests on its tab and checks HTTP and HTTPS destinations
+against its public-address policy. The browser resolves hostnames for the
+actual connection, so the DNS check cannot pin the connection to the
+address it approved. WebSockets and browser-managed popup targets are
+outside this interception. Use Camoufox or Chrome when you need the latch
+network proxy and a separate profile. If the host crashes, CDP disconnects
+and releases its interception. A tab that remains open can be closed in
+the pane.
+
 ## Calling from the host itself
 
 Use the host's own state folder and its existing `serve`:
@@ -127,7 +161,7 @@ returns `serve_required`, with instructions to start `latch serve`.
 
 ## Sessions
 
-Each `open` makes a new **session** in a browser of its own, its
+For Chrome and Camoufox, each `open` makes a new **session** in a browser of its own, its
 **runtime**: its caller's profile (below), the engine `open` names (`--engine chrome`
 or `--engine camoufox`; with neither, Camoufox if the host has it and it
 checks out, else Chrome, and the answer's `engine` says which), and one
@@ -152,8 +186,7 @@ calls in a row unanswered is closed, and its session with it
 (`browser_gone` on the third), and a worker that has not answered 30 seconds
 past a call's time is stopped (`browser_gone`).
 
-**Each agent has one browser profile per engine on a host, and its
-sessions keep it.** The profile is the agent's by its verified Plow uid
+**Chrome and Camoufox keep a browser profile per agent on a host.** The profile is the agent's by its verified Plow uid
 (all of the owner's own calls share one, `owner`), never by a name it
 gives: `<state-dir>/browser/agents/<uid>/<engine>/`, whose `data/` is the
 engine's data folder (Chrome's with password saving and autofill set off

@@ -69,7 +69,7 @@ impl Session {
         let principal = format!("test{:08x}", rand::random::<u32>());
         let profile = super::profile::make(super::profile::of(state_dir, &principal, engine)?)?;
         let runtime = Arc::new(
-            Runtime::start_with(latch, state_dir, engine, &profile, idle, headless).await?,
+            Runtime::start_with(latch, state_dir, engine, Some(&profile), idle, headless).await?,
         );
         Ok(Session::new(runtime))
     }
