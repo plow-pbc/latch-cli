@@ -151,8 +151,8 @@ latch vault link --host my-mac --kind login --title Shop --site shop.example \
   site.** The code is the only thing the host checks for an owner's link,
   so the owner should keep it to themselves.
 - **An agent may ask for a login:** `latch vault link --kind login` from an
-  agent needs the owner's message it cites (`--intent`), like its other
-  work, and is judged on the site, title and username it names, and recorded in the audit; it sends
+  agent is judged like its other work, on the site, title and username it
+  names, and recorded in the audit; it sends
   the link to the owner. Any other kind, any secret `--field`, and
   `--page` are refused: an agent's link always opens the page its host
   sets (`$LATCH_PHONE_PAGE` where `latch serve` runs, else
