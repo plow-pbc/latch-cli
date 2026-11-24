@@ -418,8 +418,8 @@ Scrolling, going back, page reads and screenshots are not judged:
 the risk decision, confirmations and the
 fill and pause checks above still hold. A refusal is exit 4,
 `gatekeeper_denied`, and nothing was sent; its `next` says the one thing
-to do. With reason `unconnected` or `exfiltration`, ask the owner in your
-1:1 room, saying exactly what you will do, and cite their answer; with
+to do. With reason `unconnected` or `exfiltration`, ask the owner in chat,
+saying what you will do, and cite their answer; with
 `denied_by_rule`, don't. A gatekeeper that can't judge (the owner's messages or the model
 unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs; its
 message says what fixes it (below, under the decision model). Owner calls

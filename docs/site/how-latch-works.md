@@ -33,9 +33,9 @@ run.
   saying to the agent, or that your device rule denies it. Unsure means
   allow, and a task's ordinary steps (signing up or in, a password, an
   email confirmation, paying what you'd expect) are part of it.
-- **The conversation is optional context.** The agent may pass `--intent
-  ROOM/EVENT`, the id of your message it acts on, from its own 1:1 room
-  with you (its Swarm DM with you, or its iMessage room). The host reads
+- **The agent cites your message.** When it acts on something you asked
+  for, it passes `--intent ROOM/EVENT`, the id of that message, from any
+  chat you share with it (your 1:1, a group or an iMessage chat). The host reads
   that message itself, with your later messages in its thread: a later
   “stop” wins. A group you share with the agent counts too. A missing
   citation, someone else's message or a thread you closed with ✅ or ❌

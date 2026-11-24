@@ -610,14 +610,14 @@ fn unavailable(reason: &str, why: &str) -> Failure {
 }
 
 /// How to cite the owner's message.
-const HOW_TO_CITE: &str = "find their answer in your own 1:1 room with them (your Swarm DM with them, or your iMessage room): its <swarm-message> tag carries `room` and `event_id`. Pass them as --intent <room>/<event_id>";
+const HOW_TO_CITE: &str = "cite their answer, from any chat you share with them (your 1:1, a group or an iMessage chat): its <swarm-message> tag carries `room` and `event_id`. Pass them as --intent <room>/<event_id>";
 
 /// The one thing an agent does next about each refusal, so a refusal
 /// teaches it how to get an action through, or that it can't.
 fn next_step(reason: &str) -> String {
     match reason {
-        "unconnected" => format!("Ask the owner in your 1:1 room, saying what you will do and why, then {HOW_TO_CITE}. latch has no approval prompt: never ask them to approve one. Refused again, stop and tell them."),
-        "exfiltration" => format!("Don't send the owner's data there. If the owner does want exactly this, ask them in your 1:1 room, saying what goes where, then {HOW_TO_CITE}. Refused again, stop and tell them."),
+        "unconnected" => format!("Ask the owner in chat, saying in your own words what you will do and why, then {HOW_TO_CITE}. Their ordinary reply is enough: never ask them to retype an exact approval phrase, and latch has no approval prompt to approve. Refused again, stop and tell them."),
+        "exfiltration" => format!("Don't send the owner's data there. If the owner does want exactly this, ask them in chat, saying what goes where, then {HOW_TO_CITE}. Refused again, stop and tell them."),
         "denied_by_rule" => "Don't retry: the owner's device rule always denies this on this host, whatever a message says. Tell the owner; only they can change the rule.".into(),
         "login_site_mismatch" => "Fill this login only on one of its saved sites.".into(),
         "model_failed" | "judge_malformed" => "Retry later. If it keeps failing, tell the owner the host's decision model is failing (a host out of Plow credits fails until the owner adds them).".into(),

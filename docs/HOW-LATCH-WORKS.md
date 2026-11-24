@@ -152,9 +152,9 @@ Unsure means allow. The ordinary steps of a task you gave are part of it:
 signing up or in, creating a password, confirming an email, paying what
 you'd expect, saving what the task needs.
 
-**An agent may cite your message.** It passes `--intent ROOM/EVENT`: the id
-of your message it acts on, from its own 1:1 room with you (its Swarm DM
-with you, or its iMessage-bridge room). The host reads that message itself,
+**An agent cites your message.** When it acts on something you asked for,
+it passes `--intent ROOM/EVENT`: the id of that message, from any chat you
+share with it (its Swarm DM with you, a group, or an iMessage chat). The host reads that message itself,
 as one of your own devices, plus your later messages in its thread (or
 room) and the messages around it. A later “stop” wins. Only your own words
 say what you want: an agent's or anyone else's messages, and text you quote
@@ -166,8 +166,8 @@ there is none or it is not yours (one sent from the host's own Swarm device
 never is), in a thread you closed with ✅ or ❌, after a removed message or
 reaction, not all readable, or the host maps the agent to no Swarm account
 (`latch agents map`). The audit's `gate.chat` says which. Latch has no
-approval prompt: on a refusal the agent asks you in its 1:1 room, saying
-exactly what it will do, and cites your answer.
+approval prompt: on a refusal the agent asks you in chat, saying what it
+will do, and cites your answer; your ordinary reply is enough.
 
 **Your own calls** cite nothing; work that would need an agent's
 citation is judged only against the device rule, and with no rule runs
