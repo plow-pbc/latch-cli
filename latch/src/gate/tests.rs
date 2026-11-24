@@ -163,6 +163,7 @@ fn asked(text: &str) -> Thread {
         later_owner: vec![],
         context: vec![],
         is_owner_dm: true,
+        shared: true,
         closed: false,
         redacted: false,
         complete: true,
@@ -378,6 +379,12 @@ async fn a_missing_or_bad_citation_is_judged_without_a_conversation() {
             AGENT,
             Some(CITED),
             thread(|t| t.sender_is_owner = false),
+        ),
+        (
+            "not_shared",
+            AGENT,
+            Some(CITED),
+            thread(|t| t.shared = false),
         ),
         (
             "thread_closed",

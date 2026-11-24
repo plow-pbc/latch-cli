@@ -252,6 +252,7 @@ impl Reader {
             later_owner: vec![],
             context: vec![],
             is_owner_dm: true,
+            shared: true,
             closed: false,
             redacted: false,
             complete: true,

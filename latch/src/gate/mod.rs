@@ -350,6 +350,7 @@ impl Gatekeeper {
                 later_owner: vec![],
                 context: vec![],
                 is_owner_dm: true,
+                shared: true,
                 closed: false,
                 redacted: false,
                 complete: true,
@@ -602,11 +603,14 @@ fn site_bound(shown: &Value, gate: &mut Value) -> Result<(), Failure> {
 
 /// Why a cited message read gives no conversation to judge by, if it
 /// doesn't: only the owner's own words, every later one of them read, in a
-/// thread still open, count. Any room may be cited, a group's included: a
-/// conversation can only add a reason to refuse, never grant anything.
+/// thread still open, in a room both the owner and the agent have joined,
+/// count. A group's counts like a 1:1's: a conversation can only add a
+/// reason to refuse, never grant anything.
 fn unusable(thread: &Thread) -> Option<&'static str> {
     if !thread.sender_is_owner {
         Some("intent_not_owner")
+    } else if !thread.shared {
+        Some("not_shared")
     } else if thread.closed {
         Some("thread_closed")
     } else if thread.redacted {

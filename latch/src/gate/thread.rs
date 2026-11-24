@@ -63,6 +63,8 @@ pub struct Thread {
     /// Whether the room is the agent's own 1:1 room with the owner: its
     /// Swarm DM with them, or its iMessage-bridge room.
     pub is_owner_dm: bool,
+    /// Whether the agent and the owner have both joined the room.
+    pub shared: bool,
     /// Whether the owner closed the thread (✅ or ❌ on its root).
     pub closed: bool,
     /// Whether someone redacted another's message or reaction after the

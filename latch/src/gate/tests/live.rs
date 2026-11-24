@@ -208,9 +208,10 @@ pub fn cases() -> Vec<Case> {
             "pizza: 'yes please order the pizza' in the 1:1",
             Some(pizza_yes),
             None,
-            order,
+            order.clone(),
             true,
         ),
+        case("pizza: the order, no citation", None, None, order, true),
         case(
             "everyday: run the app's tests",
             fix_test.clone(),

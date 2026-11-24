@@ -271,6 +271,12 @@ fn thread(
         .map(|m| m.user_id.as_str())
         .filter(|id| *id != agent)
         .collect();
+    let joined = |is: &dyn Fn(&str) -> bool| {
+        members
+            .iter()
+            .any(|m| m.membership == "join" && is(&m.user_id))
+    };
+    let shared = joined(&|id| id == agent) && joined(&|id| owners(id));
     let is_owner_dm = members.iter().all(|m| m.membership == "join")
         && members.iter().any(|m| m.user_id == agent)
         && !others.is_empty()
@@ -347,6 +353,7 @@ fn thread(
             })
             .collect(),
         is_owner_dm,
+        shared,
         closed,
         redacted,
         // A later message as the owner from no device decryption names
@@ -526,6 +533,25 @@ mod tests {
             let earlier = thread(&cited, Some(&r), OWNER, AGENT, Timestamp::now()).unwrap();
             assert!(!earlier.redacted, "{redactions}");
         }
+    }
+
+    /// A room is shared when the agent and the owner have both joined it,
+    /// whoever else is there: an invitation is no membership.
+    #[test]
+    fn a_room_is_shared_when_the_agent_and_the_owner_both_joined_it() {
+        for (members, shared) in [
+            (vec![OWNER, AGENT], true),
+            (vec![OWNER, AGENT, "@bob:plow.co"], true),
+            (vec![OWNER, "@other-agent:plow.co"], false),
+            (vec![AGENT, "@bob:plow.co"], false),
+        ] {
+            let t = of(&read(&members, vec![]));
+            assert_eq!(t.shared, shared, "{members:?}");
+        }
+        let mut r = read(&[OWNER, AGENT], vec![]);
+        r["members"] = json!([{"user_id": OWNER, "membership": "join"},
+                              {"user_id": AGENT, "membership": "invite"}]);
+        assert!(!of(&r).shared);
     }
 
     #[test]
