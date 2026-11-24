@@ -47,7 +47,7 @@ private struct GatekeeperBand: View {
                     .frame(width: 26, height: 26)
                     .background(.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
                 Text("Gatekeeper").font(.headline)
-                Text("Agents act only on a message of yours they cite.")
+                Text("Agents act unless it would leak your data or stray from what you’ve said.")
                     .foregroundStyle(.secondary)
             }
             // The label sits level with the box's first line: a text
