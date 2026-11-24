@@ -47,7 +47,7 @@ private struct GatekeeperBand: View {
                     .frame(width: 26, height: 26)
                     .background(.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
                 Text("Gatekeeper").font(.headline)
-                Text("Agents act only on a message of yours they cite.")
+                Text("Agents act unless it would leak your data or stray from what you’ve said.")
                     .foregroundStyle(.secondary)
             }
             // The label sits level with the box's first line: a text
@@ -120,7 +120,7 @@ private struct LastJudged: View {
     private func why(_ record: AuditRecord) -> String {
         let verdict = record.gate?.verdict ?? record.outcome
         if verdict == "allow" {
-            return record.agent == nil ? "Your device rule doesn't deny it." : "Your message asks for it, and your device rule doesn't deny it."
+            return record.agent == nil ? "Your device rule doesn't deny it." : "No check found a problem, and your device rule doesn't deny it."
         }
         if verdict == "denied_by_rule", let rule = record.gate?.deviceRule.flatMap({ app.ruleText($0, on: host) }) {
             return "Your device rule denies it: \u{201C}\(rule)\u{201D}"

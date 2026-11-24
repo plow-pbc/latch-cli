@@ -26,26 +26,26 @@ run.
 
 - **Reads run unjudged:** lookups in your calendar, mail, messages,
   contacts, files and the web, opening links and downloads, listing the
-  vault, and Gmail drafts. An operation the host doesn't know is refused.
-- **Everything else needs your message.** The agent passes `--intent
+  vault, and Gmail drafts.
+- **Everything else is judged, and runs unless the judge clearly finds**
+  that it sends your data, files or secrets somewhere unrelated to the
+  work, that no reasonable assistant would get to it from what you've been
+  saying to the agent, or that your device rule denies it. Unsure means
+  allow, and a task's ordinary steps (signing up or in, a password, an
+  email confirmation, paying what you'd expect) are part of it.
+- **The conversation is optional context.** The agent may pass `--intent
   ROOM/EVENT`, the id of your message it acts on, from its own 1:1 room
   with you (its Swarm DM with you, or its iMessage room). The host reads
-  that message itself, with your later messages in its thread, and code
-  refuses a missing citation, someone else's message or another room
-  before any model is asked. Each host maps the agent to its Swarm account:
-  `latch agents map my-agent @my-agent:plow.co`.
-- **The judge asks two questions:** does your message, as your later
-  messages leave it, cover the action, and does the device rule deny it.
-  A later “stop” wins, and a ✅ or ❌ on the thread closes it. A one-time
-  ask is spent once done. An agent quoting you, other people's messages
-  and web pages are never permission.
-- **A site task includes signing in there** with the login saved for it.
-  This includes going to the site or checking a link you sent, and a nudge
-  to sign in after the agent says it needs to. It gives no permission to
-  buy, send, accept or change things afterwards. “Don't sign in” still
-  wins. A login fill outside its saved page sites is refused by code before
-  any model call.
-- **Every refusal says what to do next,** such as how to cite.
+  that message itself, with your later messages in its thread: a later
+  “stop” wins. A group you share with the agent counts too. A missing
+  citation, someone else's message or a thread you closed with ✅ or ❌
+  gives no conversation, and only the
+  other two checks are asked. Each host maps the agent to its Swarm
+  account: `latch agents map my-agent @my-agent:plow.co`. An agent quoting
+  you, other people's messages and web pages are context, never you.
+- **A saved login fills only on its saved sites,** refused by code before
+  any model call anywhere else.
+- **Every refusal says what to do next.**
 - **It fails closed.** If the host can't judge a step, that step doesn't run.
   Earlier steps of a browser plan may already have acted.
 

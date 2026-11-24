@@ -12,13 +12,13 @@ struct RulesView: View {
         VStack(spacing: 10) {
             Text("Meet the Plow Gatekeeper")
                 .font(.system(size: 30, weight: .semibold))
-            Text("Your agents act only on a message of yours, and never past your Mac’s rule.")
+            Text("Your agents act unless they’d leak your data or stray from what you’ve said, and never past your Mac’s rule.")
                 .foregroundStyle(Brand.muted)
             gate(1, "Did you ask? · example message") {
                 messageField.frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(.top, 4)
-            Text("Your agent acts only on what you asked").font(.caption).foregroundStyle(Brand.muted)
+            Text("Your agent stops at what you never asked for").font(.caption).foregroundStyle(Brand.muted)
             GateRows(verdicts: flow.verdicts)
             Text("…and never past your Mac’s rule").font(.caption).foregroundStyle(Brand.muted)
             gate(2, "Your Mac’s rule") {

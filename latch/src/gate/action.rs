@@ -178,7 +178,7 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
         // agent by their own checks.
         "browser" | "rules" | "plugins" | "status" | "audit" | "audit_shot" | "audit_judge"
         | "audit_suggest" | "vault" => return None,
-        // An operation this list does not name is judged, and refused.
+        // An operation this list does not name is judged.
         _ => (none, json!({"operation": op})),
     };
     Some(Gated {
@@ -216,18 +216,16 @@ pub(crate) fn judged_stdin(stdin: &Value) -> Result<Option<String>, Failure> {
 pub enum Class {
     /// A read: it runs unjudged.
     Free,
-    /// Anything else: it needs the owner's intent.
-    Intent,
-    /// An operation latch does not know: refused.
-    Unknown,
+    /// Anything else, an operation latch does not know included: the
+    /// judge is asked.
+    Judged,
 }
 
 impl Class {
     pub fn word(self) -> &'static str {
         match self {
             Class::Free => "free",
-            Class::Intent => "intent",
-            Class::Unknown => "unknown",
+            Class::Judged => "judged",
         }
     }
 }
@@ -245,20 +243,16 @@ pub fn classify(action: &Value) -> Class {
     if let Some(kind) = action["kind"].as_str() {
         return match kind {
             "open_site" | "download_file" => Class::Free,
-            "browser_plan" | "vault_fill" | "run_script" | "upload_file" | "confirmed_step" => {
-                Class::Intent
-            }
-            _ => Class::Unknown,
+            _ => Class::Judged,
         };
     }
     match action["operation"].as_str().unwrap_or_default() {
         "file_get" | "vault.list" => Class::Free,
-        "exec" | "file_put" | "vault.link" => Class::Intent,
         "google" => {
             let words: Vec<String> =
                 serde_json::from_value(action["command"].clone()).unwrap_or_default();
             let Ok(lifted) = crate::google::policy::lift(&words) else {
-                return Class::Intent;
+                return Class::Judged;
             };
             if lifted.args == ["accounts"] {
                 return Class::Free;
@@ -267,11 +261,11 @@ pub fn classify(action: &Value) -> Class {
                 Ok(plan) if plan.read_only() || FREE_DRAFTS.contains(&plan.command.as_str()) => {
                     Class::Free
                 }
-                _ => Class::Intent,
+                _ => Class::Judged,
             }
         }
         // The connectors' reads, named one by one: an action added later is
-        // unknown until it is classified here.
+        // judged until it is classified here.
         "messages.search"
         | "messages.thread"
         | "messages.chats"
@@ -279,6 +273,6 @@ pub fn classify(action: &Value) -> Class {
         | "messages.attachment"
         | "contacts.search"
         | "contacts.lookup" => Class::Free,
-        _ => Class::Unknown,
+        _ => Class::Judged,
     }
 }

@@ -313,10 +313,12 @@ People who text the agent need its new number:
 email, messages, contacts, files and the web, and write Gmail drafts,
 without asking. What they read goes back to the agent. Everything else
 (running programs, copying files in, sending, booking, buying, browser
-steps) runs only on a message of yours the agent cites with `--intent`,
-from its own 1:1 room with you (its Swarm DM with you, or its iMessage
-room). The host reads that message and your later ones itself; a later
-“stop” wins, and a one-time ask is spent once done.
+steps) is judged, and runs unless it clearly sends your data somewhere
+unrelated to the work, has nothing to do with what you've been saying to
+the agent, or your device rule denies it. An agent may cite your message
+with `--intent`, from its own 1:1 room with you (its Swarm DM with you, or
+its iMessage room); the host then reads that message and your later ones
+itself, and a later “stop” wins.
 
 The host reads those messages as you, so sign it in to Swarm once, on
 the host itself (you must have signed in to Swarm in a browser before):
@@ -353,12 +355,13 @@ there. `--deny-exec=AGENT_UID` stops one agent.
 **When an agent is refused** (exit 4, `gatekeeper_denied`), the refusal's
 `next` says what to do:
 
-- `not_covered`: the agent asks you in its 1:1 room, saying exactly what it
-  will do, and cites your answer.
-- `intent_required`, `not_owner_dm` and similar: the agent cited no message,
-  or the wrong one, and cites yours.
-- `agent_unmapped`: run `latch agents map` on that host.
+- `unconnected` or `exfiltration`: the agent asks you in its 1:1 room,
+  saying exactly what it will do, and cites your answer.
 - `denied_by_rule` or `exec_denied`: the answer is no.
+
+If the host can't use the agent's citation (it maps the agent to no Swarm
+account, say: run `latch agents map` on that host), the agent's actions
+are judged without your conversation.
 
 ## 5. Update
 

@@ -165,7 +165,7 @@ const ENTRIES: &[Entry] = &[
         owner_only: true,
         connector: None,
         examples: &[ex(
-            "Take Scout's citations only from @scout:plow.co's 1:1 rooms with you",
+            "Read Scout's citations as @scout:plow.co",
             &["agents", "map", "Scout", "@scout:plow.co"],
         )],
     },
@@ -1307,7 +1307,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "rules.try",
         runs_on: |_| RunsOn::Local,
-        output: "`verdicts`: for each ACTION_JSON in order, `denied`: whether the draft device rule would deny it, and `covered`: with --message, whether an agent citing that message of the owner's would be asking for it (always true without one). Without --message it is judged as the owner's own request on this machine. A blank --message asks for nothing, so nothing it would judge is covered. A read is never denied and always covered, and a blank draft with no message to judge denies nothing, with no model asked; an action latch doesn't know is unknown_op, naming it.",
+        output: "`verdicts`: for each ACTION_JSON in order, `denied`: whether the draft device rule would deny it, and `covered`: with --message, whether the gatekeeper's exfiltration and chat checks would let an agent citing that message of the owner's do it (always true without one). Without --message it is judged as the owner's own request on this machine. A blank --message is a citation with no conversation, judged on the exfiltration check alone. A read is never denied and always covered, and a blank draft with no message to judge denies nothing, with no model asked.",
         effect: Repeatable(
             "asks the decision model once for each action it judges, billed to your Plow balance like a real judgment; nothing runs, the draft is never saved, and nothing is audited",
         ),

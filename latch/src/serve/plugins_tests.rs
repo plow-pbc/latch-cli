@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::gated_tests::{TestHost, always_covered, refusal, start, start_with};
+use super::gated_tests::{TestHost, always_connected, refusal, start, start_with};
 use super::*;
 use crate::failure::Exit;
 use crate::gate::fake::{FakePlow, World};
@@ -15,7 +15,7 @@ use crate::model;
 
 fn covered() -> World {
     World {
-        decide: Some(always_covered),
+        decide: Some(always_connected),
         google_accounts: vec!["me@example.com".into()],
         ..World::default()
     }
@@ -130,19 +130,17 @@ async fn a_disabled_connector_is_refused_before_it_is_judged_or_given_a_credenti
 }
 
 /// Where this host's pinned gog goes.
-/// What this host can't run at all, an operation it doesn't know or a
-/// connector its platform lacks, is refused in code: audited as a deny, so
-/// no one reads it as allowed, and never judged.
+/// What this host can't run at all is audited as its failure: an
+/// operation it doesn't know is judged like any other, then runs nothing;
+/// a connector its platform lacks is refused in code, never judged.
 #[tokio::test]
 async fn what_this_host_cannot_run_is_audited_as_its_refusal() {
     let t = start(covered()).await;
     let agent = t.caller("agent").await;
     let (answer, _) = t.call(&agent, "teleport", json!({})).await;
-    let (_, code, details) = refusal(&answer);
-    assert_eq!(
-        (code, &details["reason"]),
-        ("gatekeeper_denied", &json!("unknown_op"))
-    );
+    let (_, code, _) = refusal(&answer);
+    assert_eq!(code, "not_built_yet");
+    assert_eq!(t.judged(), 1, "the unknown operation was judged");
     // A Mac host runs these, so only another can refuse them.
     let elsewhere: &[&str] = if cfg!(target_os = "macos") {
         &[]
@@ -160,17 +158,15 @@ async fn what_this_host_cannot_run_is_audited_as_its_refusal() {
         assert_eq!((exit, code), (Exit::Failed, "unsupported_platform"));
     }
 
-    assert_eq!(t.judged(), 0, "nothing was judged");
+    assert_eq!(t.judged(), 1, "no connector was judged");
     let records = t.audit();
-    let refused = elsewhere
-        .iter()
-        .map(|&op| (op, "unsupported_platform"))
-        .chain([("teleport", "gatekeeper_denied")]);
-    for (op, outcome) in refused {
+    for &op in elsewhere {
         let record = records.iter().find(|r| r["op"] == op).unwrap();
         assert_eq!(record["decision"], "deny", "{record}");
-        assert_eq!(record["outcome"], outcome, "{record}");
+        assert_eq!(record["outcome"], "unsupported_platform", "{record}");
     }
+    let teleport = records.iter().find(|r| r["op"] == "teleport").unwrap();
+    assert_eq!(teleport["outcome"], "not_built_yet", "{teleport}");
 }
 
 fn gog_folder(t: &TestHost) -> PathBuf {
@@ -439,7 +435,7 @@ mod pinned {
     async fn google_is_enabled_only_once_its_setup_succeeds_and_stays_so_across_a_restart() {
         use std::os::unix::fs::PermissionsExt;
         let t = start(World {
-            decide: Some(always_covered),
+            decide: Some(always_connected),
             ..World::default()
         })
         .await;

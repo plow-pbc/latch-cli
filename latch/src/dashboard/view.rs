@@ -589,8 +589,9 @@ fn decision(task: &Task, call: &Call) -> Vec<String> {
     let p = &gate["p"];
     if p.is_object() {
         lines.push(format!(
-            "Judge P: covered by the cited message {} | denied by the device rule {}",
-            score(&p["covered"]),
+            "Judge P: exfiltration {} | unconnected {} | denied by the device rule {}",
+            score(&p["exfiltration"]),
+            score(&p["unconnected"]),
             score(&p["denied"])
         ));
     } else if gate["class"] == "free" {
@@ -599,10 +600,7 @@ fn decision(task: &Task, call: &Call) -> Vec<String> {
         lines.push("Judge P: not asked, or no answer from the judge".to_string());
     }
     if let Some(intent) = gate["intent"].as_str() {
-        lines.push(format!(
-            "Cited: {intent}; done before on it: {}; message text not kept here",
-            gate["already_done"].as_u64().unwrap_or(0)
-        ));
+        lines.push(format!("Cited: {intent}; message text not kept here"));
     }
     if let Some(model) = gate["model"].as_str() {
         lines.push(format!("Model: {model}"));

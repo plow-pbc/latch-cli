@@ -19,7 +19,7 @@ use crate::browser::host::{Browsers, Caller};
 use crate::failure::{Exit, Failure};
 use crate::gate::thread::{IntentRef, Reading, Said, Thread, ThreadSource};
 use crate::gate::{Gate, Gatekeeper, fake};
-use crate::model::{Answer, Asked, CallFailed, CallMeta, Kind, Provider, Question};
+use crate::model::{Answer, Asked, CallFailed, CallMeta, Provider, Question};
 use crate::vault::host::Vault;
 use crate::vault::item::{CARD, IDENTITY, Item, LOGIN, Raw};
 use crate::vault::store::Backend;
@@ -38,7 +38,7 @@ conformance!(
     the_owners_devices_are_judged_as_the_owner_against_the_device_rule,
     a_local_address_is_refused_before_the_judge_or_an_engine,
     an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs,
-    a_confirmed_send_carries_on_its_allowed_plan,
+    a_confirmed_send_is_judged_and_goes,
     one_approved_card_fill_covers_its_checkouts_address,
 );
 
@@ -70,7 +70,7 @@ impl ThreadSource for Owner {
     }
 }
 
-/// P(COVERED), P(NOT_COVERED), P(FORBIDDEN) for a judge's state.
+/// P(CONNECTED), P(UNCONNECTED), P(FORBIDDEN) for a judge's state.
 type Answers = Box<dyn Fn(&Value) -> [f64; 3] + Send + Sync>;
 
 /// The stand-in judge: answers by `answers`, and keeps each state it was
@@ -120,10 +120,11 @@ impl Provider for Judge {
         unreachable!("the gatekeeper sends its state as written")
     }
 
-    /// Answers `covered` with P(COVERED), and `denied` with P(FORBIDDEN).
+    /// Answers `unconnected` with P(UNCONNECTED), `denied` with
+    /// P(FORBIDDEN), and never finds exfiltration.
     fn ask_as_written<'a>(&'a self, state: &'a RawValue, questions: &'a [Question]) -> Asked<'a> {
         let state: Value = serde_json::from_str(state.get()).unwrap();
-        let [c, _, f] = (self.answers.lock().unwrap())(&state);
+        let [_, u, f] = (self.answers.lock().unwrap())(&state);
         self.shown.lock().unwrap().push(state);
         let down = self.down.load(std::sync::atomic::Ordering::SeqCst);
         let slow = self.slow.load(std::sync::atomic::Ordering::SeqCst);
@@ -139,19 +140,12 @@ impl Provider for Judge {
             let answers = questions
                 .iter()
                 .map(|q| {
-                    let p = if q.id == "denied" { f } else { c };
-                    // A choice (the gatekeeper's `why`) answers its first option.
-                    let answer = match &q.kind {
-                        Kind::Choose(options) => Answer::Chose {
-                            choice: options[0].0.clone(),
-                            probabilities: (options.iter())
-                                .enumerate()
-                                .map(|(i, (o, _))| (o.clone(), f64::from(u8::from(i == 0))))
-                                .collect(),
-                        },
-                        Kind::YesNo => Answer::Yes(p),
+                    let p = match q.id.as_str() {
+                        "denied" => f,
+                        "unconnected" => u,
+                        _ => 0.0,
                     };
-                    (q.id.clone(), answer)
+                    (q.id.clone(), Answer::Yes(p))
                 })
                 .collect();
             let meta = CallMeta {
@@ -392,7 +386,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
 
     // A refused plan clicks nothing: the report is never fetched.
     let plan = host.agent("do", &id, two_clicks(&link), None).await;
-    refused(&plan, "not_covered");
+    refused(&plan, "unconnected");
     let shown = judge.last_action();
     assert_eq!(shown["kind"], "browser_plan");
     // Each ref with the role and name the session's reading gave it.
@@ -413,7 +407,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
             None,
         )
         .await;
-    refused(&eval, "not_covered");
+    refused(&eval, "unconnected");
     assert_eq!(judge.last_action()["kind"], "run_script");
     assert_eq!(
         judge.last_action()["script"],
@@ -432,7 +426,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
             Some(&super::super::runtime::upload_file(&bytes)),
         )
         .await;
-    refused(&upload, "not_covered");
+    refused(&upload, "unconnected");
     assert_eq!(
         judge.last_action()["file"],
         json!({"name": "notes.txt", "size": bytes.len()})
@@ -527,7 +521,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     // either way the judge is shown the item as the vault holds it.
     for item in [Some(added.as_str()), None] {
         let filled = host.agent("fill", &id, fill(item), None).await;
-        refused(&filled, "not_covered");
+        refused(&filled, "unconnected");
         assert_eq!(filled.1["item"], json!(added), "{item:?}");
         assert_eq!(
             judge.last_action(),
@@ -633,7 +627,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
             None,
         )
         .await;
-    refused(&filled, "not_covered");
+    refused(&filled, "unconnected");
     assert_eq!(
         judge.last_action(),
         json!({"kind": "vault_fill", "site": "shop.example",
@@ -686,18 +680,18 @@ async fn every_click_is_judged_from_do_or_act(engine: &str) {
     let mut one_step = act(&format!("click {link}"));
     one_step.as_object_mut().unwrap().remove("act");
     let refusal = host.agent("do", &id, one_step, None).await;
-    refused(&refusal, "not_covered");
+    refused(&refusal, "unconnected");
     assert_eq!(judge.last_action()["kind"], "browser_plan");
     assert_eq!(fetched(&hits).len(), loaded, "the link was never clicked");
 
     // `act click eN`, and two steps under `act`, are judged too.
     let mut two = two_clicks(&link);
     two["act"] = json!(true);
-    refused(&host.agent("do", &id, two, None).await, "not_covered");
+    refused(&host.agent("do", &id, two, None).await, "unconnected");
     let refusal = host
         .agent("do", &id, act(&format!("click {link}")), None)
         .await;
-    refused(&refusal, "not_covered");
+    refused(&refusal, "unconnected");
     assert_eq!(fetched(&hits).len(), loaded, "the link was never clicked");
     host.look("close", &id, json!({})).await;
 }
@@ -829,7 +823,7 @@ async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
                 failure.code.as_str(),
                 &failure.details["stop"]["reason"]
             ),
-            (Exit::Denied, "gatekeeper_denied", &json!("not_covered")),
+            (Exit::Denied, "gatekeeper_denied", &json!("unconnected")),
             "{failure:?}"
         );
         // The audit keeps where it stopped and why by code, never the
@@ -860,7 +854,7 @@ async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
             .flatten()
             .find(|record| record["op"] == "fill")
             .unwrap_or_else(|| panic!("no fill record in {audit:?}"));
-        assert_eq!(fill["gate"]["verdict"], "not_covered");
+        assert_eq!(fill["gate"]["verdict"], "unconnected");
         assert_eq!(fill["dispatch"], "refused");
     }
     judge.slow.store(0, std::sync::atomic::Ordering::SeqCst);
@@ -1394,7 +1388,7 @@ async fn the_owners_devices_are_judged_as_the_owner_against_the_device_rule(engi
     // An agent on the same host is still judged as an agent.
     let loaded = fetched(&hits).len();
     let refusal = host.agent("do", &id, two_clicks(&link), None).await;
-    refused(&refusal, "not_covered");
+    refused(&refusal, "unconnected");
     assert_eq!(refusal.1["gate"]["caller"], "agent");
     assert_eq!(
         fetched(&hits).len(),
@@ -1474,19 +1468,12 @@ async fn composed(host: &Host, site: &str, engine: &str, message: &str) -> (Stri
 }
 
 /// A Send the gatekeeper allowed in a plan and the risk decision paused:
-/// its confirmation carries that plan on, so the judge isn't shown the plan
-/// as a send already done, and it goes; a second, different send on the
-/// same ask is shown the first, and is refused.
-async fn a_confirmed_send_carries_on_its_allowed_plan(engine: &str) {
+/// its confirmation is judged on what it sends, and goes; a second send
+/// is paused again by the risk decision.
+async fn a_confirmed_send_is_judged_and_goes(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let (site, _) = serve_site();
-    // A one-time ask: covered until a send was already done on it.
-    let judge = Judge::new(
-        |state| match state["already_done"].to_string().contains("Send") {
-            true => NOT_COVERED,
-            false => COVERED,
-        },
-    );
+    let judge = Judge::new(|_| COVERED);
     let mut host = Host::start(&state, &site, &judge);
     host.browsers.provider = Some(Arc::new(Wary));
     let (id, send) = composed(&host, &site, engine, "Any time after 2pm works").await;
@@ -1499,21 +1486,23 @@ async fn a_confirmed_send_carries_on_its_allowed_plan(engine: &str) {
         .as_str()
         .unwrap()
         .to_string();
+    let judged = judge.judged();
     let request = format!("r{:012x}", rand::random::<u64>() & 0xffff_ffff_ffff);
     let args = json!({"request": request, "plan": {"steps": []}, "confirm": confirmation});
     let (sent, audit) = host.agent("do", &id, args, None).await;
     sent.unwrap();
-    assert_eq!(audit["gate"]["continues"], true);
+    assert_eq!(judge.judged(), judged + 1, "the confirmation is judged");
+    assert_eq!(judge.last_action()["kind"], "confirmed_step");
+    assert_eq!(audit["gate"]["verdict"], "allow");
     assert!(
         shows(&host, &id)
             .await
             .contains("sent: Any time after 2pm works")
     );
-    // Another send on the same ask: the first is done, so it is refused.
     let (again, _) = host
         .agent("do", &id, act(&format!("click {send}")), None)
         .await;
-    assert_eq!(again.unwrap_err().code, "gatekeeper_denied");
+    assert_eq!(again.unwrap_err().code, "confirm_needed");
     host.look("close", &id, json!({})).await;
 }
 
@@ -1610,7 +1599,7 @@ async fn one_approved_card_fill_covers_its_checkouts_address(engine: &str) {
     assert!(text.contains("Ada") && text.contains("London"), "{text}");
     // An identity's secret is no address: judged on its own, and refused.
     let ssn = json!([["ssn", textbox(&address, "Postcode")]]);
-    refused(&fill(&home, &address, ssn).await, "not_covered");
+    refused(&fill(&home, &address, ssn).await, "unconnected");
     assert_eq!(judge.judged(), asked + 1);
     // The card's number into the provider's frame, which its approved fill
     // never went to: refused with nothing filled, and the checkout closed,
@@ -1696,7 +1685,7 @@ async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine
             failure.code.as_str(),
             &failure.details["stop"]["reason"]
         ),
-        (Exit::Denied, "gatekeeper_denied", &json!("not_covered")),
+        (Exit::Denied, "gatekeeper_denied", &json!("unconnected")),
         "{failure:?}"
     );
     assert_eq!(judge.judged(), asked + 1);
@@ -1722,7 +1711,7 @@ async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine
         judged["fields"].to_string().contains("re: the deposit"),
         "{judged:#}"
     );
-    assert_eq!(audit["gate"]["verdict"], "not_covered");
+    assert_eq!(audit["gate"]["verdict"], "unconnected");
     assert!(shows(&host, &id).await.contains("nothing sent"));
 
     // A message longer than the judge is shown says it was cut short.

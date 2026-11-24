@@ -728,7 +728,7 @@ pub(super) async fn fill(
             checking = Some(covered);
         } else {
             checking = judged::Checkout::opened_by(item, &action);
-            judged::judge(caller.gate, action, &entry.filled(), None, audit).await?;
+            judged::judge(caller.gate, action, &entry.filled(), audit).await?;
         }
     }
     let within = judged::Checking::within(&checking);
@@ -829,29 +829,19 @@ async fn answer(
         }
         _ => args,
     };
-    // An allowed plan is what a confirmation of one of its steps carries on.
-    let mut allowed = None;
     if caller.gate.is_some()
         && let Some(action) = judged_action(browsers, &entry, command, args).await?
     {
-        allowed = judged::judge(caller.gate, action, &entry.filled(), None, audit).await?;
+        judged::judge(caller.gate, action, &entry.filled(), audit).await?;
     }
     let result = match command {
         "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
         "fill" => fill(browsers, &entry, caller, args, audit)
             .await
             .map(|result| (result, None)),
-        "do" => super::steps::run(
-            browsers,
-            &entry,
-            name,
-            key,
-            caller.gate.map(|gate| (gate, allowed)),
-            args,
-            audit,
-        )
-        .await
-        .map(|result| (result, None)),
+        "do" => super::steps::run(browsers, &entry, name, key, caller.gate, args, audit)
+            .await
+            .map(|result| (result, None)),
         "handoff" => super::handoff::run(browsers, &entry, args, audit)
             .await
             .map(|result| (result, None)),
@@ -988,7 +978,7 @@ async fn open(
     }
     if let Some(url) = url {
         let action = judged::open_site(browsers, url);
-        judged::judge(caller.gate, action, &[], None, audit).await?;
+        judged::judge(caller.gate, action, &[], audit).await?;
     }
     // Judged first, as a named engine's own check comes only at its launch.
     let engine = match named {

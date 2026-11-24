@@ -23,7 +23,7 @@ use super::host::{Browsers, Entry};
 use super::plan::{CheckKind, Literal, Op, Plan, Step};
 use super::shown::Filled;
 use crate::failure::Failure;
-use crate::gate::{Allowed, Gate};
+use crate::gate::Gate;
 use crate::vault::store::Backend;
 use crate::vault::{classify, sites};
 
@@ -123,36 +123,22 @@ pub(super) struct FileShown {
 /// browser's own tests) is never judged. The audit keeps what was judged
 /// as `judged`, without titles, URL paths or a plan's steps and facts, and
 /// the judgment as `gate`.
-/// Returns the action as the gate allowed it on an intent, for what
-/// `continues` it later: none with no gate, or no intent.
 pub(super) async fn judge(
     gate: Option<Gate<'_>>,
     action: Action,
     filled: &[Filled],
-    continues: Option<&Allowed>,
     audit: &mut Map<String, Value>,
-) -> Result<Option<Allowed>, Failure> {
+) -> Result<(), Failure> {
     let Some(gate) = gate else {
-        return Ok(None);
+        return Ok(());
     };
     let action = shown(&action, filled);
     audit.insert("judged".into(), audited(action.clone()));
     let judging = std::time::Instant::now();
-    let judgment = gate.judge_continuing(&action, continues).await;
+    let judgment = gate.judge(&action).await;
     super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
-    let allowed = match (
-        judgment.gate["intent"].as_str(),
-        judgment.gate["entry"].as_str(),
-    ) {
-        (Some(intent), Some(entry)) => Some(Allowed {
-            intent: intent.into(),
-            entry: entry.into(),
-        }),
-        _ => None,
-    };
     audit.insert("gate".into(), judgment.gate);
-    judgment.verdict?;
-    Ok(allowed)
+    judgment.verdict
 }
 
 /// The audit's copy of a judged action: no plan steps or facts, no
@@ -953,7 +939,7 @@ mod tests {
         let keeper =
             Gatekeeper::new(std::sync::Arc::new(provider), reader, &state).keeping_requests(&state);
         let action = serde_json::value::to_raw_value(&action).unwrap();
-        let judgment = keeper.judge(Caller::Owner, &action, None).await;
+        let judgment = keeper.judge(Caller::Owner, &action).await;
         let id = judgment.gate["kept_request"].as_str().unwrap();
         let kept = crate::gate::requests::read(&state, id, true)
             .unwrap()

@@ -208,19 +208,20 @@ decision route and what came back. ID is the `kept_request` in a record's
 - `layer`: `gatekeeper`.
 - `request`: the body as sent, `{"model", "state", "questions"}`. The
   state holds the rules of judgment, the time, the device rule, and for
-  an agent the cited message, the owner's later messages, what was
-  already done on that intent and the thread's other messages as context;
+  an agent whose citation was read the cited message, the owner's later
+  messages and the thread's other messages as context;
   then the proposed action. Keys print sorted.
 - `answer`: Plow's reply, an error's included, or null when none came
   (the record's `model_failed` says why).
 
-`details.gate.p` holds the call's probabilities (`denied`, `covered`);
-`details.gate` also names the caller, the class (`free`, `intent` or
-`unknown`), the intent cited, the device rule's revision, the prompt,
-model and cost, `already_done`, `later_owner_messages`, `context` (`shown`
-of `of`), `thread_read_ms`, the verdict, `latency_ms` and, for an allowed
-intent action, `gate_record`: the audit record (op `gate`) written before
-it ran.
+`details.gate.p` holds the call's probabilities (`denied`,
+`exfiltration`, `unconnected`; null when not asked); `details.gate` also
+names the caller, the class (`free` or `judged`), `chat` (`read`, or why
+the citation gave no conversation), the intent cited, the device rule's
+revision, the prompt, model and cost, `owner_dm`,
+`later_owner_messages`, `context` (`shown` of `of`), `thread_read_ms`, the
+verdict, `latency_ms` and, for an allowed judged action, `gate_record`:
+the audit record (op `gate`) written before it ran.
 
 A host keeps a call 7 days, on that host only, sealed with its audit key.
 It prints the request and answer with credential-looking values hidden,

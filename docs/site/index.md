@@ -2,7 +2,8 @@
 
 Latch lets your AI agents use a computer you trust: its files, programs,
 browser, Google account and, on a Mac, Messages and Contacts. That computer is
-a host. Its gatekeeper lets an agent act only on a message of yours it cites.
+a host. Its gatekeeper stops an agent's actions that would send your data away,
+that have nothing to do with what you asked, or that you always deny.
 
 You need macOS 13 or later, or 64-bit Linux, and a Plow account.
 

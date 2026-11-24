@@ -2879,27 +2879,16 @@ impl LivePlow {
                            "usage": {"input_tokens": 1, "output_tokens": 0}}),
                 )
             }
-            // The gatekeeper's questions: the intent covers it, and the
-            // device rule forbids it only while `forbidden`.
+            // The gatekeeper's checks: only the device rule finds anything,
+            // and only while `forbidden`.
             ("POST", "/v1/decisions") if kind == "device" => {
                 let asked: Value = serde_json::from_slice(&request.body).unwrap_or_default();
                 let answers: serde_json::Map<String, Value> = asked["questions"]
                     .as_object()
                     .into_iter()
                     .flatten()
-                    .map(|(id, question)| {
-                        // A choice (`why`) answers its first option.
-                        if let Some(options) = question["criteria"].as_object() {
-                            let first = options.keys().next().cloned().unwrap_or_default();
-                            let probabilities: serde_json::Map<String, Value> = options
-                                .keys()
-                                .map(|o| (o.clone(), json!(f64::from(u8::from(*o == first)))))
-                                .collect();
-                            let answer = json!({"type": "choice", "choice": first,
-                                                "probabilities": probabilities});
-                            return (id.clone(), answer);
-                        }
-                        let yes = if id == "denied" { state.forbidden } else { true };
+                    .map(|(id, _)| {
+                        let yes = id == "denied" && state.forbidden;
                         let p = if yes { 0.9 } else { 0.05 };
                         (id.clone(), json!({"type": "noul", "noul": p}))
                     })
@@ -3807,15 +3796,13 @@ fn a_host_runs_exec_and_files_under_home() {
     );
     assert_eq!(put.status.code(), Some(0), "{put:?}");
     assert_eq!(fs::read_to_string(home.join("note.txt")).unwrap(), "hi");
-    // An agent's exec needs the owner's intent: citing none, it is refused.
-    let refused_exec = latch(
+    // An agent's exec citing nothing is judged without a conversation.
+    let agent_exec = latch(
         &agent,
         &["exec", "--host", "host", "--", "true"],
         &agent_env,
     );
-    let (code, refused) = answered(&refused_exec);
-    assert_eq!(code, Some(4), "{refused}");
-    assert_eq!(refused["error"]["reason"], "intent_required", "{refused}");
+    assert_eq!(agent_exec.status.code(), Some(0), "{agent_exec:?}");
     // What needs no folder still works: here, the owner's rule.
     let shown = latch(&owner, &["rules", "show", "--host", "host"], &[]);
     assert_eq!(shown.status.code(), Some(0), "{shown:?}");
