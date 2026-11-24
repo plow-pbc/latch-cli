@@ -36,7 +36,7 @@ guides cover the [browser](../latch/BROWSER.md), [vault](../latch/VAULT.md),
 |---|---|---|---|---|---|
 | **Owner** | One of your machines, logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Device rule, agent map and vault on any host (`--host NAME`). Connectors: listed on any host, turned on or off only on the host itself. | Yes. | As your own request: refused only where the host's device rule denies it. |
 | **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` naming another machine. An agent running there counts. | That host, through its private local socket. Other hosts, as the owner. | Yes, on that host. The device rule and vault work even while the host is stopped. | It is the host. | Exactly like the owner. The audit records it as `owner_on_host`. |
-| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: `owner_only` (exit 4). It may run `vault list`, which shows each item's id, title and saved sites, and `vault link --kind login`, which asks you for a login on your phone (it sees only whether it was saved, and the new item's id), and it sees which connectors each host has on. On its own computer, where latch is installed alone, it runs `latch update`. | No: its login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against the message of yours it cites from its own 1:1 room with you, and the device rule. |
+| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: `owner_only` (exit 4). It may run `vault list`, which shows each item's id, title and saved sites, and `vault link --kind login`, which asks you for a login on your phone (it sees only whether it was saved, and the new item's id), and it sees which connectors each host has on. On its own computer, where latch is installed alone, it runs `latch update`. | No: its login saves no Plow token, so `latch serve` stops with `not_logged_in`. | For exfiltration, against the message of yours it cites from a chat you share, and against the device rule. |
 
 - **A host knows a remote caller only by its key.** It asks Plow who that
   key is when the caller connects, and again before every operation. If
@@ -152,9 +152,9 @@ Unsure means allow. The ordinary steps of a task you gave are part of it:
 signing up or in, creating a password, confirming an email, paying what
 you'd expect, saving what the task needs.
 
-**An agent may cite your message.** It passes `--intent ROOM/EVENT`: the id
-of your message it acts on, from its own 1:1 room with you (its Swarm DM
-with you, or its iMessage-bridge room). The host reads that message itself,
+**An agent cites your message.** When it acts on something you asked for,
+it passes `--intent ROOM/EVENT`: the id of that message, from any chat you
+share with it (its Swarm DM with you, a group, or an iMessage chat). The host reads that message itself,
 as one of your own devices, plus your later messages in its thread (or
 room) and the messages around it. A later “stop” wins. Only your own words
 say what you want: an agent's or anyone else's messages, and text you quote
@@ -166,8 +166,8 @@ there is none or it is not yours (one sent from the host's own Swarm device
 never is), in a thread you closed with ✅ or ❌, after a removed message or
 reaction, not all readable, or the host maps the agent to no Swarm account
 (`latch agents map`). The audit's `gate.chat` says which. Latch has no
-approval prompt: on a refusal the agent asks you in its 1:1 room, saying
-exactly what it will do, and cites your answer.
+approval prompt: on a refusal the agent asks you in chat, saying what it
+will do, and cites your answer; your ordinary reply is enough.
 
 **Your own calls** cite nothing; work that would need an agent's
 citation is judged only against the device rule, and with no rule runs

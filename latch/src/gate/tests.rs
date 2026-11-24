@@ -880,16 +880,17 @@ fn every_refusal_teaches_its_next_step() {
     for asking in ["unconnected", "exfiltration"] {
         let said = next_step(asking);
         assert!(
-            said.starts_with("Ask the owner") || said.contains("ask them in your 1:1 room"),
+            said.starts_with("Ask the owner") || said.contains("ask them in chat"),
             "{asking}: {said}"
         );
+        assert!(said.contains("any chat you share"), "{asking}: {said}");
         assert!(
             said.contains("--intent <room>/<event_id>"),
             "{asking}: {said}"
         );
         assert!(said.contains("<swarm-message>"), "{asking}: {said}");
     }
-    assert!(next_step("unconnected").contains("never ask them to approve one"));
+    assert!(next_step("unconnected").contains("never ask them to retype an exact approval phrase"));
     assert!(next_step("denied_by_rule").starts_with("Don't retry"));
     for failing in ["model_failed", "judge_malformed"] {
         assert!(next_step(failing).starts_with("Retry"), "{failing}");

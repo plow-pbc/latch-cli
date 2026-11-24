@@ -35,7 +35,7 @@ impl Exit {
                 "The host could not be reached, or could not judge the call. Its message says what fixes it: often a retry later. A browser plan may have run steps before it stopped: read its `steps` and `stop` and send only what is left."
             }
             Exit::Denied => {
-                "Refused; don't retry, except: gatekeeper_denied with reason unconnected or exfiltration (latch has no approval prompt: ask the owner in your 1:1 room with them, naming exactly what you will do, and cite their answer with --intent ROOM/EVENT; refused again, stop and tell them); confirm_needed (if the task needs it, carry it out with `latch browser do --confirm C`); calendar_conflict (ask the owner; once they agree, resend with --confirm-conflict)."
+                "Refused; don't retry, except: gatekeeper_denied with reason unconnected or exfiltration (the refusal names the check: ask the owner in chat, in your own words, what you will do, and cite their answer with --intent ROOM/EVENT; never ask them to retype an exact approval phrase; refused again, stop and tell them); confirm_needed (if the task needs it, carry it out with `latch browser do --confirm C`); calendar_conflict (ask the owner; once they agree, resend with --confirm-conflict)."
             }
             Exit::Unknown => {
                 "The connection was lost after the request was sent; check before resending."

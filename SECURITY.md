@@ -31,8 +31,8 @@ model up.
   agents are trusted, so the judge, a model, catches mistakes and obvious
   attacks rather than approving each step: an action runs unless it
   clearly sends the owner's data somewhere unrelated to the work, has
-  nothing to do with the conversation the agent cites from its own 1:1
-  room with the owner (read by the host itself), or falls under the host's
+  nothing to do with the conversation the agent cites from a chat it
+  shares with the owner (read by the host itself), or falls under the host's
   deny-only device rule. With no usable citation, only the first and last
   are asked.
 - **It fails closed.** If the gatekeeper can't judge, nothing runs.

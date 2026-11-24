@@ -315,10 +315,10 @@ without asking. What they read goes back to the agent. Everything else
 (running programs, copying files in, sending, booking, buying, browser
 steps) is judged, and runs unless it clearly sends your data somewhere
 unrelated to the work, has nothing to do with what you've been saying to
-the agent, or your device rule denies it. An agent may cite your message
-with `--intent`, from its own 1:1 room with you (its Swarm DM with you, or
-its iMessage room); the host then reads that message and your later ones
-itself, and a later “stop” wins.
+the agent, or your device rule denies it. When an agent acts on something
+you asked for, it cites your message with `--intent`, from any chat you
+share with it (your 1:1, a group or an iMessage chat); the host then reads
+that message and your later ones itself, and a later “stop” wins.
 
 The host reads those messages as you, so sign it in to Swarm once, on
 the host itself (you must have signed in to Swarm in a browser before):
@@ -355,8 +355,8 @@ there. `--deny-exec=AGENT_UID` stops one agent.
 **When an agent is refused** (exit 4, `gatekeeper_denied`), the refusal's
 `next` says what to do:
 
-- `unconnected` or `exfiltration`: the agent asks you in its 1:1 room,
-  saying exactly what it will do, and cites your answer.
+- `unconnected` or `exfiltration`: the agent asks you in chat, saying what
+  it will do, and cites your answer. Your ordinary reply is enough.
 - `denied_by_rule` or `exec_denied`: the answer is no.
 
 If the host can't use the agent's citation (it maps the agent to no Swarm

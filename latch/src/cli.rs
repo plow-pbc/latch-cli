@@ -95,11 +95,13 @@ Agents:
   clearly sends the owner's data somewhere unrelated to the work
   (exfiltration), has nothing to do with what the owner has been saying to
   you (unconnected), or falls under the owner's device rule
-  (denied_by_rule). Pass --intent ROOM/EVENT, the id of the owner's message
-  you are acting on in a room you share with them, so the host reads that
-  conversation too. On exfiltration or unconnected, latch has no approval
-  prompt: ask the owner there, naming exactly what you will do, and cite
-  their answer; refused again, stop and tell them. denied_by_rule and
+  (denied_by_rule). When you act on something the owner asked for, pass
+  --intent ROOM/EVENT citing that message, from any chat you share with
+  them (your 1:1, a group or an iMessage chat), so the host reads that
+  conversation too. A refusal names the check and its next step. On
+  exfiltration or unconnected, ask the owner in chat, in your own words,
+  what you will do, and cite their answer; never ask them to retype an
+  exact approval phrase. Refused again, stop and tell them. denied_by_rule and
   exec_denied (the owner turned exec off there) mean no.
   Exit 3, gatekeeper_unavailable: the host could not judge. Its message says
   what fixes it: often a retry later, but a host out of Plow credits fails

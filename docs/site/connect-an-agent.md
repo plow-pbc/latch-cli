@@ -132,8 +132,9 @@ Agents may look things up, open web pages, download files and write Gmail
 drafts without asking. Everything else is judged, and runs unless it
 clearly sends your data somewhere unrelated to the work, has nothing to do
 with what you've been saying to the agent, or your device rule denies it.
-An agent may cite your message with `--intent ROOM/EVENT`, from its own 1:1
-room with you (its Swarm DM with you, or its iMessage room). The host reads
+When an agent acts on something you asked for, it cites your message with
+`--intent ROOM/EVENT`, from any chat you share with it (your 1:1, a group
+or an iMessage chat). The host reads
 that message and your later ones itself: a later “stop” wins. A task you
 give includes its ordinary steps, such as using a site's saved login there.
 An agent quoting you is not you.
@@ -169,5 +170,5 @@ latch exec --host my-mac -- ls -la
 | 1 | Failed. | Read the error. |
 | 2 | The command is wrong, or it names no host. | Fix the command. |
 | 3 | The host couldn't be reached, or couldn't judge the request. | Retry later. A browser plan may have run some steps: read its `steps`. |
-| 4 | Refused. | Do what the refusal's `next` says. For `unconnected` or `exfiltration`, ask the owner in your 1:1 room, then cite their answer. Otherwise don't retry. |
+| 4 | Refused. | Do what the refusal's `next` says. The refusal names the check. For `unconnected` or `exfiltration`, ask the owner in chat, then cite their answer. Otherwise don't retry. |
 | 5 | Sent, but no answer came back. | Check what happened before you send it again. |
