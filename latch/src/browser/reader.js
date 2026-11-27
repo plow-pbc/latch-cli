@@ -560,12 +560,16 @@
     return { caret: caretAt(el, caret) };
   };
   // A field that took none of the keys, or only the first ones, gets the
-  // value in one step.
+  // value in one step, unless the page moved the focus away: the keys it
+  // lacks went into another field.
   const typeEnd = (snap, index, value, expected, formatted) => {
     const el = element(snap, index);
     if (!el || expected !== token) return { refused: 'the field is gone' };
     const now = current(el);
-    if (now !== value && value.startsWith(now)) setValue(el, value);
+    if (now !== value && value.startsWith(now)) {
+      if (!focused(el)) return { refused: 'the keys went into another field' };
+      setValue(el, value);
+    }
     return held(el, value, formatted);
   };
   // Whether `el` is its document's active element. Keys go to it only

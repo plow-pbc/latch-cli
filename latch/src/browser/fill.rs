@@ -1145,7 +1145,7 @@ async fn release_and_set(
         })?;
         for (target, piece) in boxes.iter().zip(pieces) {
             let set = json!({"op": "set_value", "target": target["ref"], "value": piece,
-                             "whole": (boxes.len() > 1).then_some(&value),
+                             "whole": (label == "otp" && boxes.len() > 1).then_some(&value),
                              "secret": suggest::secret_field(&meta, label),
                              "formatted": formatted(meta.kind, label)});
             let answer = step(session, set, audit).await?;

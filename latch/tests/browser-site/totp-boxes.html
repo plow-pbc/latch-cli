@@ -2,7 +2,8 @@
 <!-- Six one-digit boxes, each moving the focus on, as on Slack's 2FA page.
      ?formless: boxes outside the form. ?stray: box 3 moves the focus to a
      promo field. ?beacon: boxes 2-6 GET the code so far. ?paged: each box
-     GETs page=<digit>. Verify posts the joined code as `otp`. -->
+     GETs page=<digit>. ?steal: each box's keydown focuses the promo field.
+     Verify posts the joined code as `otp`. -->
 <h1>Two-step verification</h1>
 <form method="post" action="verify">
   <fieldset><legend>Authentication code</legend>
@@ -24,6 +25,7 @@
   const boxes = [...document.querySelectorAll('[aria-label^=Digit]')];
   const promo = document.getElementById('promo');
   boxes.forEach((box, at) => {
+    if (options.has('steal')) box.addEventListener('keydown', () => promo.focus());
     box.addEventListener('input', () => {
       box.value = box.value.replace(/\D/g, '').slice(-1);
       if (!box.value) return;
@@ -34,7 +36,7 @@
       else if (boxes[at + 1]) boxes[at + 1].focus();
     });
   });
-  promo.addEventListener('input', () => { document.getElementById('touched').textContent = 'promo touched'; });
+  promo.addEventListener('input', () => { document.getElementById('touched').textContent = promo.value.length > 1 ? 'promo holds code' : 'promo touched'; });
   form.addEventListener('submit', () => {
     form.querySelector('[name=otp]').value = boxes.map((b) => b.value).join('');
   });

@@ -2600,9 +2600,10 @@ async fn a_code_in_one_character_boxes_fills_every_box(engine: &str) {
 
     // Mapped by the first box alone, every box takes its digit; a box that
     // moves the focus elsewhere sends no digit there (`stray`), a `page=N`
-    // load goes through (`paged`), and the code so far in an address stops
-    // the fill with none of it sent (`beacon`).
-    for page in ["", "?formless&stray", "?paged", "?beacon"] {
+    // load goes through (`paged`), the code so far in an address stops
+    // the fill with none of it sent (`beacon`), and keys a box's keydown
+    // sends elsewhere stop it before a second digit follows (`steal`).
+    for page in ["", "?formless&stray", "?paged", "?beacon", "?steal"] {
         let before = beacons(pages).0;
         let opened = h
             .call(
@@ -2623,12 +2624,17 @@ async fn a_code_in_one_character_boxes_fills_every_box(engine: &str) {
             assert_eq!(beacons(pages).1, 0);
             continue;
         }
+        let answer = h.text().await;
+        assert!(!answer.contains("promo holds"), "{page}: {answer}");
+        if page == "?steal" {
+            assert!(filled.is_err() || !answer.contains("promo touched"));
+            continue;
+        }
         assert_eq!(
             filled.unwrap()["fields"].as_array().unwrap().len(),
             6,
             "{page}"
         );
-        let answer = h.text().await;
         assert!(answer.contains("code accepted"), "{page}: {answer}");
         assert!(!answer.contains("promo touched"), "{page}");
         assert!(
