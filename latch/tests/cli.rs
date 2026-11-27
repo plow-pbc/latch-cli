@@ -10421,7 +10421,8 @@ fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
     )
     .unwrap();
     let mut nexts = Vec::new();
-    // The owner with Google but no device rule, then with one too.
+    // The owner with Google but no device rule, then with one too: either
+    // way setup goes on to the host, the rule being the owner's to answer.
     let ruled = dir.path().join("ruled");
     fs::create_dir_all(&ruled).unwrap();
     let ruled = owner_host_on(&plow, &ruled);
@@ -10471,7 +10472,7 @@ fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
             "latch login --events",
             "latch plugins enable google --events",
             "latch plugins enable google",
-            "latch rules edit",
+            "latch serve -d",
             "latch serve -d"
         ]
     );

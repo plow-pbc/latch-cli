@@ -732,9 +732,14 @@ fn status_reads_the_saved_connectors_and_serve_flags_and_changes_nothing() {
         steps["host"]["args"],
         serde_json::json!(["serve", "-d", "--again"])
     );
-    // No device rule here yet: the owner edits one.
-    assert_eq!(steps["rules"]["state"], "needed");
-    assert_eq!(steps["rules"]["args"], serde_json::json!(["rules", "edit"]));
+    // No device rule here yet: nothing is denied, and no program is handed
+    // the owner's question, only told where the owner answers it.
+    assert_eq!(steps["rules"]["state"], "done");
+    assert_eq!(steps["rules"]["args"], serde_json::Value::Null);
+    assert_eq!(
+        steps["rules"]["reason"],
+        "Nothing is denied on this machine until you set its device rule, under its Rules in Plow Latch or with `latch rules edit` at a terminal."
+    );
     if cfg!(target_os = "macos") {
         let messages = &steps["messages"];
         assert_eq!(messages["state"], "blocked");

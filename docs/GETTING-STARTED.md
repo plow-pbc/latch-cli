@@ -125,6 +125,8 @@ Ctrl-C stops setup at any step. Run `latch setup` again to pick up where
 you left off.
 
 `latch setup --status` lists the same steps as JSON and changes nothing.
+There, a device rule never set counts as done: nothing is denied until you
+set one, and only you can, so a program running the steps leaves it to you.
 
 **Logging in by text.** `latch login` shows a QR code and a line like this:
 

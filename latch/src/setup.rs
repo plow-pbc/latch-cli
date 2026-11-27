@@ -629,11 +629,14 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
             None,
         ),
         Some(_) if answered => Step::new("rules", Done, "Your device rule is set.".into(), None),
+        // Unanswered, the default holds: nothing is denied. Only the owner
+        // can answer, so it is no step for a program to run; setup at a
+        // terminal and the app's window ask them.
         Some(_) => Step::new(
             "rules",
-            Needed,
-            "Say what agents are always denied on this machine, or that nothing is.".into(),
-            Some(vec!["rules", "edit"]),
+            Done,
+            "Nothing is denied on this machine until you set its device rule, under its Rules in Plow Latch or with `latch rules edit` at a terminal.".into(),
+            None,
         ),
     });
     steps.push(match (&local.login, &local.this_machine.hosting) {
