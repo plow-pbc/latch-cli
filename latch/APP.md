@@ -37,9 +37,18 @@ A login can also end two other ways:
 
 In both cases, the usual error JSON also goes to stderr.
 
-When another of your machines already has the name, the error is
-`conflict` (exit 2), and it says which machine has it, for the app to ask
-"Use another name" or "Replace studio":
+A login given no `--name` is named after the hostname. When another of
+your machines already has it, this one takes the next free name
+(`studio-2`, then `studio-3`, …) on the same text, and the `verified` line
+says whose name it was:
+
+```
+{"type":"verified","peer":{"name":"studio-2","key":"…","kind":"device"},"name_taken":"studio"}
+```
+
+When another of your machines already has a name given with `--name`, the
+error is `conflict` (exit 2), and it says which machine has it, for the app
+to ask "Use another name" or "Replace studio":
 
 ```
 {"type":"error","error":{"code":"conflict","message":"a machine named \"studio\" already exists…","existing_name":"studio","last_seen_at":"2026-10-21T04:44:15Z"}}

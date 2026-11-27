@@ -1565,7 +1565,7 @@ pub struct LoginArgs {
     #[arg(long, value_name = "URL")]
     pub api_url: Option<String>,
 
-    /// Name of this machine or agent, unique in the account [default: a machine's hostname; an agent's own name in Plow]
+    /// Name of this machine or agent, unique in the account [default: a machine's hostname, or the next free name after it (`mac-2`) when another of your machines has it; an agent's own name in Plow]
     #[arg(long)]
     pub name: Option<String>,
 
@@ -1573,7 +1573,7 @@ pub struct LoginArgs {
     #[arg(long)]
     pub events: bool,
 
-    /// If another of your machines already has this name, replace it: it is removed from your account, which signs it out of Plow, and this machine takes the name. Without it, a taken name is an error (at a terminal, a question). An agent's name is never taken over
+    /// If another of your machines already has this name, replace it: it is removed from your account, which signs it out of Plow, and this machine takes the name. Without it, a taken name given with --name is an error (at a terminal, a question). An agent's name is never taken over
     #[arg(long)]
     pub replace: bool,
 

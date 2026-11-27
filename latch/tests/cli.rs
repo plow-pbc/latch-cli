@@ -724,13 +724,131 @@ fn an_agent_given_a_name_stops_on_a_clash() {
     assert_eq!(body(&requests[1])["name"], "bot");
 }
 
-#[test]
-fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
+fn hostname() -> String {
     let uname = Command::new("uname").arg("-n").output().unwrap();
     let hostname = String::from_utf8(uname.stdout).unwrap();
-    let hostname = hostname.trim().split('.').next().unwrap().to_string();
+    hostname.trim().split('.').next().unwrap().to_string()
+}
+
+/// The app's login: nobody chose the hostname, so another machine holding
+/// it never stops the login. This one takes the next free name, on the
+/// text already sent, and the verified line says whose name it was.
+#[test]
+fn a_machine_named_after_its_hostname_takes_the_next_free_name_on_a_clash() {
+    let hostname = hostname();
     let holder = peer(json!("c".repeat(64)), &hostname, "device", Value::Null);
-    // Taken, and Plow lists who holds it.
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        (409, json!({})),
+        (200, json!({"data": [holder]})),
+        // -2 was taken between the listing and the registration.
+        (409, json!({})),
+        (
+            200,
+            peer(Value::Null, &format!("{hostname}-3"), "device", Value::Null),
+        ),
+    ]);
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let login = latch(&state, &["login", "--events", "--api-url", &api_url], &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let verified = event_lines(&login).pop().unwrap();
+    assert_eq!(verified["type"], "verified", "{verified}");
+    assert_eq!(verified["peer"]["name"], format!("{hostname}-3"));
+    assert_eq!(verified["name_taken"], hostname.as_str());
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(state.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["peer"]["name"], format!("{hostname}-3"));
+
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 6);
+    assert_eq!(body(&requests[2])["name"], hostname.as_str());
+    assert!(requests[3].starts_with("GET /v1/latch/peers "));
+    assert_eq!(body(&requests[4])["name"], format!("{hostname}-2"));
+    assert_eq!(body(&requests[5])["name"], format!("{hostname}-3"));
+    // The other machine keeps its name and its login.
+    assert!(!requests.iter().any(|r| r.starts_with("DELETE ")));
+    assert!(requests.iter().all(|r| !r.contains("take_over")));
+}
+
+/// At a terminal, and with an owner token, the same: a line says why the
+/// name has a number, and the JSON says whose name it was.
+#[test]
+fn a_taken_hostname_is_explained_at_a_terminal_and_in_json() {
+    let hostname = hostname();
+    let holders = json!({"data": [
+        peer(json!("c".repeat(64)), &hostname, "device", Value::Null),
+        peer(json!("d".repeat(64)), &format!("{hostname}-2"), "device", Value::Null),
+    ]});
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        (409, json!({})),
+        (200, holders.clone()),
+        (
+            200,
+            peer(Value::Null, &format!("{hostname}-3"), "device", Value::Null),
+        ),
+    ]);
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let (code, shown, _) =
+        latch_at_a_terminal(&state, &["login", "--api-url", &api_url], "", false, &[]);
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(
+        shown.contains(&format!(
+            "Another of your machines is already named {hostname:?}, so this one is \"{hostname}-3\". `latch devices` lists them."
+        )),
+        "{shown}"
+    );
+    assert!(
+        shown
+            .trim_end()
+            .ends_with(&format!("Logged in as {hostname}-3.")),
+        "{shown}"
+    );
+    // Nothing asked: the name was never the person's choice.
+    assert!(!shown.contains("Replace it"), "{shown}");
+    assert_eq!(
+        body(&server.join().unwrap()[4])["name"],
+        format!("{hostname}-3")
+    );
+
+    let (api_url, server) = fake_plow(vec![
+        (409, json!({})),
+        (200, holders),
+        (
+            200,
+            peer(Value::Null, &format!("{hostname}-3"), "device", Value::Null),
+        ),
+    ]);
+    let owner_token = dir.path().join("owner.token");
+    fs::write(&owner_token, "owner-login\n").unwrap();
+    let args = [
+        "login",
+        "--api-url",
+        &api_url,
+        "--token-file",
+        owner_token.to_str().unwrap(),
+    ];
+    let login = latch(&dir.path().join("state-2"), &args, &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let answer: Value = serde_json::from_slice(&login.stdout).unwrap();
+    assert_eq!(answer["peer"]["name"], format!("{hostname}-3"), "{answer}");
+    assert_eq!(answer["name_taken"], hostname.as_str(), "{answer}");
+    assert_eq!(server.join().unwrap().len(), 3);
+}
+
+/// A name the person gave is theirs: taken, it still stops the login and
+/// says which machine has it, for the app to ask.
+#[test]
+fn a_taken_name_given_with_name_still_stops_on_a_clash() {
+    let holder = peer(json!("c".repeat(64)), "studio", "device", Value::Null);
     let (api_url, server) = fake_plow(vec![(409, json!({})), (200, json!({"data": [holder]}))]);
     let dir = test_dir();
     let owner_token = dir.path().join("owner.token");
@@ -742,12 +860,13 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
         &api_url,
         "--token-file",
         owner_token.to_str().unwrap(),
+        "--name",
+        "studio",
     ];
     let login = latch(&state, &args, &[]);
     assert_eq!(login.status.code(), Some(2), "{login:?}");
     let error: Value = serde_json::from_slice(&login.stderr).unwrap();
     assert_eq!(error["error"]["code"], "conflict", "{error}");
-    // Nobody to ask: it says what to run next.
     let message = error["error"]["message"].as_str().unwrap();
     assert!(
         message.contains("`latch login --token-file FILE --name OTHER`"),
@@ -755,19 +874,15 @@ fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
     );
     assert_eq!(
         error["error"]["next"],
-        format!("latch login --token-file FILE --name {hostname} --replace")
+        "latch login --token-file FILE --name studio --replace"
     );
-    // And, for an app to ask which, the machine that has the name.
-    assert_eq!(error["error"]["existing_name"], hostname.as_str());
+    assert_eq!(error["error"]["existing_name"], "studio");
     assert_eq!(error["error"]["last_seen_at"], "2026-10-15T01:30:12Z");
     assert!(!state.join("config.json").exists());
-
-    // One registration, never retried to take the name over.
+    // One registration, never retried under another name or to take it over.
     let requests = server.join().unwrap();
-    assert_eq!(body(&requests[0])["name"], hostname.as_str());
-    assert!(body(&requests[0]).get("take_over").is_none());
     assert_eq!(requests.len(), 2);
-    assert!(requests[1].starts_with("GET /v1/latch/peers "));
+    assert!(body(&requests[0]).get("take_over").is_none());
 }
 
 #[test]

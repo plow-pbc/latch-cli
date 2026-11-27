@@ -292,8 +292,12 @@ async fn run(
             match login::run(&state, args).await {
                 Ok(output) => {
                     let peer = &output.peer;
-                    login::event(json!({"type": "verified", "peer":
-                        {"name": peer.name, "key": peer.key, "kind": peer.kind}}));
+                    let mut verified = json!({"type": "verified", "peer":
+                        {"name": peer.name, "key": peer.key, "kind": peer.kind}});
+                    if let Some(taken) = &output.name_taken {
+                        verified["name_taken"] = json!(taken);
+                    }
+                    login::event(verified);
                     Ok(Printed(String::new()))
                 }
                 Err(failure) if failure.code == "code_expired" => {
@@ -311,6 +315,12 @@ async fn run(
             // A person who logged in by text reads one line where they
             // texted; every other login is a regular command's JSON.
             if output.by_text {
+                if let Some(taken) = &output.name_taken {
+                    eprintln!(
+                        "Another of your machines is already named {taken:?}, so this one is {:?}. `latch devices` lists them.",
+                        output.peer.name
+                    );
+                }
                 eprintln!("Logged in as {}.", output.peer.name);
                 return Ok(Printed(String::new()));
             }

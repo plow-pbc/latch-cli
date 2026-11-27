@@ -138,8 +138,9 @@ with the phone's camera. Latch waits for the text, then prints
 
 The machine is named after its hostname. `latch login --name NAME` picks
 another name. Names are unique in your account. If another of your machines
-has the name, the login asks whether to replace that machine or which name to
-use instead. `latch devices` lists your machines. Run on a machine that is
+has this one's hostname, it takes the next free name, such as `my-mac-2`, and
+says so. If another has a name you gave with `--name`, the login asks whether
+to replace that machine or which name to use instead. `latch devices` lists your machines. Run on a machine that is
 logged in already, `latch login` changes nothing and says as whom;
 `latch login --again` logs in anew.
 

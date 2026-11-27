@@ -42,6 +42,11 @@ pub struct LoginOutput {
     /// This state folder was logged in already, and nothing was changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub already_logged_in: Option<String>,
+    /// The hostname this machine would have been named after, when another
+    /// of the owner's machines already had it and this one took the next
+    /// free name instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_taken: Option<String>,
 }
 
 /// Where this login's credential comes from.
@@ -79,6 +84,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             key_created: false,
             by_text: false,
             already_logged_in: Some(message),
+            name_taken: None,
         });
     }
     let saved_url = match &saved {
@@ -132,7 +138,8 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         },
     };
     // A machine is named after its hostname, without asking.
-    if owner && name.is_none() {
+    let from_hostname = owner && name.is_none();
+    if from_hostname {
         name = default_name();
     }
 
@@ -175,6 +182,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             name: registration.name.or(me.as_ref().map(|me| me.name.clone())),
             ..registration
         };
+        let mut name_taken = None;
         let peer = match plow.register(&registration).await {
             // Two agents may share a name: unless one was asked for, try once
             // more as the name plus the start of this agent's uid.
@@ -195,12 +203,25 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
                 if registration.name.is_none() {
                     return Err(failure);
                 }
-                let rerun = if given {
-                    "latch login --token-file FILE"
+                // Nobody chose the hostname, so it never stops a login: this
+                // machine takes the next free name after it, on the login
+                // already in hand.
+                let free = if from_hostname && !args.replace {
+                    free_name(&plow, &registration).await?
                 } else {
-                    "latch login"
+                    None
                 };
-                clash(&plow, registration, rerun, args.replace).await?
+                if let Some(peer) = free {
+                    name_taken = registration.name;
+                    peer
+                } else {
+                    let rerun = if given {
+                        "latch login --token-file FILE"
+                    } else {
+                        "latch login"
+                    };
+                    clash(&plow, registration, rerun, args.replace).await?
+                }
             }
             result => result?,
         };
@@ -221,6 +242,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             key_created,
             by_text: texted,
             already_logged_in: None,
+            name_taken,
         })
     }
     .await;
@@ -473,6 +495,45 @@ async fn clash(
             result => return result,
         }
     }
+}
+
+/// Registers this machine as `NAME-2`, or the next number no peer of the
+/// account has, when another peer holds NAME. `None` when Plow lists no
+/// other peer by NAME, so the clash is over something else: `clash` says
+/// what.
+async fn free_name(plow: &Plow, registration: &Registration) -> Result<Option<Peer>, Failure> {
+    let name = registration
+        .name
+        .as_deref()
+        .expect("a clash is over a name");
+    let peers = plow.list_peers().await.unwrap_or_default();
+    if !peers
+        .iter()
+        .any(|peer| peer.name == name && peer.key != registration.key)
+    {
+        return Ok(None);
+    }
+    let mut taken = None;
+    // A name taken between the listing and the registration costs a try.
+    let free = (2..100)
+        .map(|number| format!("{name}-{number}"))
+        .filter(|other| !peers.iter().any(|peer| &peer.name == other))
+        .take(3);
+    for other in free {
+        let named = Registration {
+            name: Some(other),
+            ..registration.clone()
+        };
+        match plow.register(&named).await {
+            Err(failure) if failure.code == "conflict" => taken = Some(failure),
+            result => return result.map(Some),
+        }
+    }
+    Err(taken.unwrap_or_else(|| {
+        let message =
+            format!("every name from {name}-2 to {name}-99 is taken; choose one with --name");
+        Failure::new(code::conflict, message)
+    }))
 }
 
 /// `word` as a shell reads it back: as it is when it holds only safe
