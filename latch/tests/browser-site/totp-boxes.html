@@ -1,0 +1,43 @@
+<!doctype html><title>latch boxed code test</title>
+<!-- Six one-digit boxes, each moving the focus on, as on Slack's 2FA page.
+     ?formless: boxes outside the form. ?stray: box 3 moves the focus to a
+     promo field. ?beacon: boxes 2-6 GET the code so far. ?paged: each box
+     GETs page=<digit>. ?steal: each box's keydown focuses the promo field.
+     Verify posts the joined code as `otp`. -->
+<h1>Two-step verification</h1>
+<form method="post" action="verify">
+  <fieldset><legend>Authentication code</legend>
+    <div><input aria-label="Digit 1" autocomplete="one-time-code" inputmode="numeric" maxlength="1"></div>
+    <div><input aria-label="Digit 2" inputmode="numeric" maxlength="1"></div>
+    <div><input aria-label="Digit 3" inputmode="numeric" maxlength="1"></div>
+    <div><input aria-label="Digit 4" inputmode="numeric" maxlength="1"></div>
+    <div><input aria-label="Digit 5" inputmode="numeric" maxlength="1"></div>
+    <div><input aria-label="Digit 6" inputmode="numeric" maxlength="1"></div>
+  </fieldset>
+  <input type="hidden" name="otp">
+  <p><button type="submit">Verify</button></p>
+</form>
+<footer><label>Promo code <input id="promo" maxlength="10"></label> <span id="touched"></span></footer>
+<script>
+  const options = new URLSearchParams(location.search);
+  const form = document.querySelector('form');
+  if (options.has('formless')) form.before(document.querySelector('fieldset'));
+  const boxes = [...document.querySelectorAll('[aria-label^=Digit]')];
+  const promo = document.getElementById('promo');
+  boxes.forEach((box, at) => {
+    if (options.has('steal')) box.addEventListener('keydown', () => promo.focus());
+    box.addEventListener('input', () => {
+      box.value = box.value.replace(/\D/g, '').slice(-1);
+      if (!box.value) return;
+      const typed = boxes.map((b) => b.value).join('');
+      if (at > 0 && options.has('beacon')) fetch(`beacon?leak=${encodeURIComponent(typed)}`).catch(() => {});
+      if (options.has('paged')) fetch(`beacon?page=${box.value}`).catch(() => {});
+      if (options.has('stray') && at === 2) promo.focus();
+      else if (boxes[at + 1]) boxes[at + 1].focus();
+    });
+  });
+  promo.addEventListener('input', () => { document.getElementById('touched').textContent = promo.value.length > 1 ? 'promo holds code' : 'promo touched'; });
+  form.addEventListener('submit', () => {
+    form.querySelector('[name=otp]').value = boxes.map((b) => b.value).join('');
+  });
+</script>

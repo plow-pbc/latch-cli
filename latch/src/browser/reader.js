@@ -358,6 +358,7 @@
       clickable: r === 'button' || r === 'link',
       role: r,
       name: name(el),
+      max_length: el.maxLength > 0 ? el.maxLength : null,
       hidden: !rendered(el) || unread(el),
       disabled: isDisabled(el),
       readonly: !!el.readOnly,
@@ -460,7 +461,6 @@
       origin: self.origin === 'null' ? 'opaque' : self.origin,
       token,
       kind: el.localName === 'select' ? 'select' : textLike(el) ? 'text' : 'other',
-      max_length: el.maxLength > 0 ? el.maxLength : null,
       placeholder: el.getAttribute('placeholder') || '',
       page_secret: markedSecret(el),
     };
@@ -580,12 +580,16 @@
     return { caret: caretAt(el, caret) };
   };
   // A field that took none of the keys, or only the first ones, gets the
-  // value in one step.
+  // value in one step, unless the page moved the focus away: the keys it
+  // lacks went into another field.
   const typeEnd = (snap, index, value, expected, formatted) => {
     const el = element(snap, index);
     if (!el || expected !== token) return { refused: 'the field is gone' };
     const now = current(el);
-    if (now !== value && value.startsWith(now)) setValue(el, value);
+    if (now !== value && value.startsWith(now)) {
+      if (!focused(el)) return { refused: 'the keys went into another field' };
+      setValue(el, value);
+    }
     return held(el, value, formatted);
   };
   // Whether `el` is its document's active element. Keys go to it only

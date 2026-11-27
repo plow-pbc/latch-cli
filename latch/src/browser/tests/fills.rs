@@ -47,6 +47,7 @@ conformance!(
     a_login_is_typed_with_the_engines_own_keys,
     no_part_of_a_typed_secret_goes_into_an_address,
     a_field_that_formats_its_value_still_holds_it,
+    a_code_in_one_character_boxes_fills_every_box,
     only_a_layer_of_its_own_covers_a_field_and_the_refusal_names_it,
     no_secret_goes_into_a_form_sent_by_get,
     requests_go_on_while_a_guard_outlives_its_call,
@@ -2650,6 +2651,68 @@ async fn a_field_that_formats_its_value_still_holds_it(engine: &str) {
     println!("spaced code: {}", verified["fields"]);
     assert_eq!(verified["submitted"], true);
     assert!(h.text().await.contains("code accepted"));
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_code_in_one_character_boxes_fills_every_box(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| s.add(item(LOGIN, "Shop", &["shop.example"], &[("totp", KEY)])))
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // Mapped by the first box alone, every box takes its digit; a box that
+    // moves the focus elsewhere sends no digit there (`stray`), a `page=N`
+    // load goes through (`paged`), the code so far in an address stops
+    // the fill with none of it sent (`beacon`), and keys a box's keydown
+    // sends elsewhere stop it before a second digit follows (`steal`).
+    for page in ["", "?formless&stray", "?paged", "?beacon", "?steal"] {
+        let before = beacons(pages).0;
+        let opened = h
+            .call(
+                "open",
+                json!({"url": format!("{local}/totp-boxes.html{page}")}),
+            )
+            .await
+            .unwrap();
+        let (filled, _) = h
+            .fill(json!({
+                "item": login.item,
+                "fields": [["otp", [find(&opened, "textbox", "Digit 1")]]],
+                "press": find(&opened, "button", "Verify"),
+            }))
+            .await;
+        if page == "?beacon" {
+            assert_eq!(filled.unwrap_err().code, "get_form");
+            assert_eq!(beacons(pages).1, 0);
+            continue;
+        }
+        let answer = h.text().await;
+        assert!(!answer.contains("promo holds"), "{page}: {answer}");
+        if page == "?steal" {
+            assert!(filled.is_err() || !answer.contains("promo touched"));
+            continue;
+        }
+        assert_eq!(
+            filled.unwrap()["fields"].as_array().unwrap().len(),
+            6,
+            "{page}"
+        );
+        assert!(answer.contains("code accepted"), "{page}: {answer}");
+        assert!(!answer.contains("promo touched"), "{page}");
+        assert!(
+            page != "?paged" || beacons(pages).0 > before,
+            "page=N blocked"
+        );
+    }
     h.call("close", json!({})).await.ok();
 }
 

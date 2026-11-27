@@ -277,12 +277,58 @@ pub fn controls_of(inventory: &Value) -> Vec<Control> {
         .collect()
 }
 
+/// A fill's mapping as it is carried out: a suggestion's, and a code's
+/// boxes (`code_boxes`).
+pub async fn resolve(browsers: &Browsers, entry: &Entry, args: &Value) -> Result<Value, Failure> {
+    let resolved = suggested(browsers, entry, args).await?;
+    code_boxes(browsers, entry, resolved).await
+}
+
+/// A login's code mapped to its first box alone, where the page asks for it
+/// a character a box: the one-character boxes right after it, in its frame
+/// and form, take the rest, each judged, set and confirmed as if named.
+async fn code_boxes(browsers: &Browsers, entry: &Entry, mut args: Value) -> Result<Value, Failure> {
+    let Some(at) = args["fields"].as_array().and_then(|fields| {
+        fields.iter().position(|pair| {
+            pair[0] == "otp" && pair[1].as_array().is_some_and(|refs| refs.len() == 1)
+        })
+    }) else {
+        return Ok(args);
+    };
+    if item_of(browsers, &args)?.meta().kind != "login" {
+        return Ok(args);
+    }
+    let inventory = worker(
+        entry,
+        json!({"op": "fill_inventory", "snapshot": args["snapshot"]}),
+    )
+    .await?;
+    let controls = controls_of(&inventory);
+    let one = |c: &Control| c.tag == "input" && c.takes_value() && c.max_length == Some(1);
+    let first = &args["fields"][at][1][0];
+    let Some(start) = controls
+        .iter()
+        .position(|c| *first == c.reference.as_str() && one(c))
+    else {
+        return Ok(args);
+    };
+    let head = &controls[start];
+    let boxes: Vec<&str> = controls[start..]
+        .iter()
+        .take_while(|c| one(c) && c.frame == head.frame && c.form == head.form)
+        .map(|c| c.reference.as_str())
+        .collect();
+    args["fields"][at][1] = json!(boxes);
+    args["snapshot"] = inventory["snapshot"].clone();
+    Ok(args)
+}
+
 /// A fill that takes suggestion `suggested`, as the explicit mapping it
 /// stands for: recomputed on its snapshot now, for the item as it is. A
 /// suggestion that no longer comes out the same is refused `stale_snapshot`,
 /// with the page as it is now and its suggestions; latch never maps anew
 /// on its own. Arguments with no suggestion come back as they are.
-pub async fn resolve(browsers: &Browsers, entry: &Entry, args: &Value) -> Result<Value, Failure> {
+async fn suggested(browsers: &Browsers, entry: &Entry, args: &Value) -> Result<Value, Failure> {
     let Some(id) = args["suggested"].as_str() else {
         return Ok(args.clone());
     };
@@ -1109,6 +1155,7 @@ async fn release_and_set(
         })?;
         for (target, piece) in boxes.iter().zip(pieces) {
             let set = json!({"op": "set_value", "target": target["ref"], "value": piece,
+                             "whole": (label == "otp" && boxes.len() > 1).then_some(&value),
                              "secret": suggest::secret_field(&meta, label),
                              "formatted": formatted(meta.kind, label)});
             let answer = step(session, set, audit).await?;
