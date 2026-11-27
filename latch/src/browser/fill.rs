@@ -284,20 +284,15 @@ pub async fn resolve(browsers: &Browsers, entry: &Entry, args: &Value) -> Result
     code_boxes(browsers, entry, resolved).await
 }
 
-/// A login's code mapped to its first box alone, where the page asks for
-/// it a character a box: the boxes of one character right after it on the
-/// page, in its form (or in none, as it is) take the rest. The mapping
-/// names each box, as the agent could have, so each is judged, checked,
-/// set and confirmed as its own; a code that does not split into them is
-/// refused `split_mismatch` before any goes in.
+/// A login's code mapped to its first box alone, where the page asks for it
+/// a character a box: the one-character boxes right after it, in its frame
+/// and form, take the rest, each judged, set and confirmed as if named.
 async fn code_boxes(browsers: &Browsers, entry: &Entry, mut args: Value) -> Result<Value, Failure> {
-    let single =
-        |pair: &Value| pair[0] == "otp" && pair[1].as_array().is_some_and(|r| r.len() == 1);
-    let Some(first) = args["fields"]
-        .as_array()
-        .and_then(|fields| fields.iter().find(|pair| single(pair)))
-        .map(|pair| pair[1][0].clone())
-    else {
+    let Some(at) = args["fields"].as_array().and_then(|fields| {
+        fields.iter().position(|pair| {
+            pair[0] == "otp" && pair[1].as_array().is_some_and(|refs| refs.len() == 1)
+        })
+    }) else {
         return Ok(args);
     };
     if item_of(browsers, &args)?.meta().kind != "login" {
@@ -310,23 +305,20 @@ async fn code_boxes(browsers: &Browsers, entry: &Entry, mut args: Value) -> Resu
     .await?;
     let controls = controls_of(&inventory);
     let one = |c: &Control| c.tag == "input" && c.takes_value() && c.max_length == Some(1);
-    let Some(at) = controls
+    let first = &args["fields"][at][1][0];
+    let Some(start) = controls
         .iter()
-        .position(|c| first == c.reference.as_str() && one(c))
+        .position(|c| *first == c.reference.as_str() && one(c))
     else {
         return Ok(args);
     };
-    let boxes: Vec<&str> = controls[at..]
+    let head = &controls[start];
+    let boxes: Vec<&str> = controls[start..]
         .iter()
-        .take_while(|c| one(c) && c.frame == controls[at].frame && c.form == controls[at].form)
+        .take_while(|c| one(c) && c.frame == head.frame && c.form == head.form)
         .map(|c| c.reference.as_str())
         .collect();
-    if let Some(pair) = args["fields"]
-        .as_array_mut()
-        .and_then(|fields| fields.iter_mut().find(|pair| single(pair)))
-    {
-        pair[1] = json!(boxes);
-    }
+    args["fields"][at][1] = json!(boxes);
     args["snapshot"] = inventory["snapshot"].clone();
     Ok(args)
 }

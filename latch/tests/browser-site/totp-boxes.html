@@ -1,14 +1,8 @@
 <!doctype html><title>latch boxed code test</title>
-<!-- A code in six one-character boxes, the way Slack's two-factor page
-     asks for it: each box, in a wrapper of its own, takes one digit and
-     moves the focus on to the next, and a paste of the whole code spreads
-     it across them. Options: ?formless puts the boxes before the form, in
-     none; ?stray has box 3 move the focus to a promo field after the
-     boxes instead, which says so if anything is typed into it; ?beacon
-     has every box after the first send the code so far to /beacon in the
-     address, as a page checking it as it is typed would; ?paged has every
-     box load /beacon?page=N, N its own digit. Verify posts the joined
-     code as `otp` to /verify, which checks it against the test key. -->
+<!-- Six one-digit boxes, each moving the focus on, as on Slack's 2FA page.
+     ?formless: boxes outside the form. ?stray: box 3 moves the focus to a
+     promo field. ?beacon: boxes 2-6 GET the code so far. ?paged: each box
+     GETs page=<digit>. Verify posts the joined code as `otp`. -->
 <h1>Two-step verification</h1>
 <form method="post" action="verify">
   <fieldset><legend>Authentication code</legend>
@@ -38,12 +32,6 @@
       if (options.has('paged')) fetch(`beacon?page=${box.value}`).catch(() => {});
       if (options.has('stray') && at === 2) promo.focus();
       else if (boxes[at + 1]) boxes[at + 1].focus();
-    });
-    box.addEventListener('paste', (event) => {
-      event.preventDefault();
-      const digits = event.clipboardData.getData('text').replace(/\D/g, '');
-      [...digits].forEach((d, i) => { if (boxes[at + i]) boxes[at + i].value = d; });
-      (boxes[at + digits.length] || boxes[boxes.length - 1]).focus();
     });
   });
   promo.addEventListener('input', () => { document.getElementById('touched').textContent = 'promo touched'; });

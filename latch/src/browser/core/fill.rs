@@ -348,11 +348,9 @@ impl<D: Driver> Core<D> {
         }
         // A secret is guarded before it reaches the page, as stored and as
         // a single-line field holds it, without its line breaks; and each
-        // part of it the field holds as the keys arrive. A piece of one
-        // split across boxes is guarded as its box holds it and whole, as
-        // the boxes hold it between them; but no part of one character,
-        // which says nothing of the secret and is in many an address
-        // (`page=3`).
+        // part of it the field holds as the keys arrive. A piece split
+        // across boxes is guarded whole too, but not one character of it,
+        // which many an address holds (`page=3`).
         if secret {
             let forms = [value, whole.unwrap_or(value)];
             let unbroken = forms.map(|form| form.replace(['\r', '\n'], ""));

@@ -214,9 +214,8 @@ vault lacks is refused `no_such_item`. The mapping is
 `password`, `otp` for a login's current authenticator code, computed on
 the host; a card's `number`, `expiry`, `cvv`, …; an identity's or a note's
 fields), `--field number=e4,e5,e6,e7` for a value split across boxes
-(a login's code in one-character boxes may be mapped by its first box
-alone: latch maps the one-character boxes right after it, in its form or
-in none, as if you had named them), a login's password whole into each of its boxes (`--field
+(a code in one-character boxes by its first box alone), a login's
+password whole into each of its boxes (`--field
 password=e5,e6`, a sign-up's password and confirm boxes, both password
 inputs in one form); or `--suggested S`, a mapping latch suggested. Dates and expiries are
 reshaped to the field's own format. A mapping that includes a login's

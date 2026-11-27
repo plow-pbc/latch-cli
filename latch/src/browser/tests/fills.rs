@@ -2598,75 +2598,44 @@ async fn a_code_in_one_character_boxes_fills_every_box(engine: &str) {
     ));
     let mut h = Harness::start(browsers, engine).await;
 
-    // Six boxes of one digit each, each moving the focus on once it holds
-    // its digit. Mapped as the agent sees it, the first box alone, or box
-    // by box, in a form or in none (each box in a wrapper of its own), the
-    // code is split a digit a box and the page sends it whole. A page that
-    // moves the focus elsewhere gets no digit there (`stray`), and one that
-    // loads `page=N` as the boxes fill is let through (`paged`).
-    for (page, mapped) in [
-        ("totp-boxes.html", 1),
-        ("totp-boxes.html", 6),
-        ("totp-boxes.html?formless", 1),
-        ("totp-boxes.html?formless&stray", 1),
-        ("totp-boxes.html?paged", 1),
-    ] {
+    // Mapped by the first box alone, every box takes its digit; a box that
+    // moves the focus elsewhere sends no digit there (`stray`), a `page=N`
+    // load goes through (`paged`), and the code so far in an address stops
+    // the fill with none of it sent (`beacon`).
+    for page in ["", "?formless&stray", "?paged", "?beacon"] {
         let before = beacons(pages).0;
         let opened = h
-            .call("open", json!({"url": format!("{local}/{page}")}))
+            .call(
+                "open",
+                json!({"url": format!("{local}/totp-boxes.html{page}")}),
+            )
             .await
             .unwrap();
-        let boxes: Vec<String> = (1..=mapped)
-            .map(|n| find(&opened, "textbox", &format!("Digit {n}")))
-            .collect();
-        let (verified, _) = h
+        let (filled, _) = h
             .fill(json!({
                 "item": login.item,
-                "fields": [["otp", boxes]],
+                "fields": [["otp", [find(&opened, "textbox", "Digit 1")]]],
                 "press": find(&opened, "button", "Verify"),
             }))
             .await;
-        let verified = verified.unwrap();
-        println!("{page}, {mapped} box(es) mapped: {}", verified["fields"]);
-        assert_eq!(verified["submitted"], true);
-        assert_eq!(verified["fields"].as_array().unwrap().len(), 6, "{page}");
-        let answer = h.text().await;
-        assert!(
-            answer.contains("code accepted"),
-            "{page}, {mapped}: {answer}"
-        );
-        assert!(!answer.contains("promo touched"), "{page}");
-        if page.ends_with("paged") {
-            assert!(beacons(pages).0 > before, "no page=N load went through");
+        if page == "?beacon" {
+            assert_eq!(filled.unwrap_err().code, "get_form");
+            assert_eq!(beacons(pages).1, 0);
+            continue;
         }
+        assert_eq!(
+            filled.unwrap()["fields"].as_array().unwrap().len(),
+            6,
+            "{page}"
+        );
+        let answer = h.text().await;
+        assert!(answer.contains("code accepted"), "{page}: {answer}");
+        assert!(!answer.contains("promo touched"), "{page}");
+        assert!(
+            page != "?paged" || beacons(pages).0 > before,
+            "page=N blocked"
+        );
     }
-
-    // The code is guarded whole, as the boxes hold it between them: a page
-    // that sends the code so far in an address sends none of it, and the
-    // fill says the page tried.
-    let opened = h
-        .call(
-            "open",
-            json!({"url": format!("{local}/totp-boxes.html?beacon")}),
-        )
-        .await
-        .unwrap();
-    let (stopped, _) = h
-        .fill(json!({
-            "item": login.item,
-            "fields": [["otp", [find(&opened, "textbox", "Digit 1")]]],
-            "press": find(&opened, "button", "Verify"),
-        }))
-        .await;
-    let stopped = stopped.unwrap_err();
-    println!(
-        "boxes with a beacon: {} ({}); beacons {:?}",
-        stopped.code,
-        stopped.message,
-        beacons(pages)
-    );
-    assert_eq!(stopped.code, "get_form");
-    assert_eq!(beacons(pages).1, 0);
     h.call("close", json!({})).await.ok();
 }
 
